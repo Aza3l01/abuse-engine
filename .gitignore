@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+venv/
+datasets/mock_logs.json
