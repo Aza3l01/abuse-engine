@@ -521,10 +521,6 @@ abuse-engine/
 
 ---
 
-*Last updated: March 2026. Maintained by Jeff Emerson Mathew, NIT Puducherry.*  
-*Contact: jeff.emerson.mathew@gmail.com | Portfolio: aza3l.vercel.app*
-
----
 
 # 11. Recent Progress & Validation (March 2026)
 
