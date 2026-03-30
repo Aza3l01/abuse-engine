@@ -3,7 +3,6 @@
 > **For LLMs reading this:** This file is the authoritative context for the abuse-engine project.
 > Read it fully before making any code suggestions. The research path is the current priority.
 > Do not suggest product-layer features until the research validation loop is complete.
-
 ---
 
 ## 0. What This Project Is (60-Second Version)
@@ -435,12 +434,12 @@ Each customer is a fully isolated tenant:
 
 ```
 IMMEDIATE (needed for paper):
-[ ] evaluation/validate_behavioral.py         — F1 on synthetic data, IsoForest vs full agent
-[ ] scripts/convert_cicids.py                 — CICIDS2017 → CanonicalEvent
-[ ] evaluation/validate_full_pipeline.py      — ablation table on CICIDS data
-[ ] Wire spatiotemporal into main.py          — build schema adapter, add to coordinator
-[ ] Save/load trained IsolationForest         — joblib.dump/load, no retraining each run
-[ ] Expand spec.yaml                          — add /api/login, /api/products, /api/search
+[x] evaluation/validate_behavioral.py         # F1 on synthetic data, IsoForest vs full agent
+[x] scripts/convert_cicids.py                # CICIDS2017 → CanonicalEvent
+[ ] evaluation/validate_full_pipeline.py      # ablation table on CICIDS data
+[x] Wire spatiotemporal into main.py          # build schema adapter, add to coordinator
+[x] Save/load trained IsolationForest         # joblib.dump/load, no retraining each run
+[x] Expand spec.yaml                          # add /api/login, /api/products, /api/search
 
 PAPER CONTENT:
 [ ] Ablation table (all 6 configurations)
@@ -453,7 +452,6 @@ PRODUCT (after paper submission):
 [ ] Redis fast-path rule engine
 [ ] Schema adapter for spatiotemporal agent
 [ ] Streamlit dashboard for demo
-[ ] configs/config.yaml — move thresholds out of source code
 [ ] AI Agent Detection Agent
 [ ] Tenant Isolation Agent
 [ ] Inline proxy (Envoy/Nginx)
@@ -479,44 +477,47 @@ PRODUCT (after paper submission):
 
 ```
 abuse-engine/
-├── main.py                          Full pipeline entry point
-├── spec.yaml                        OpenAPI spec for semantic agent — EXPAND THIS
-├── LLM_CONTEXT.md                   This file — authoritative project context
+├── main.py                          # Full pipeline entry point
+├── spec.yaml                        # OpenAPI spec for semantic agent
+├── LLM_CONTEXT.md                   # This file — authoritative project context
 │
 ├── schemas/
-│   ├── event_schema.py              CanonicalEvent — shared input, never bypass
-│   └── agent_result.py              AgentResult — shared output, never bypass
+│   ├── event_schema.py              # CanonicalEvent — shared input, never bypass
+│   └── agent_result.py              # AgentResult — shared output, never bypass
 │
 ├── engine/
-│   ├── normalization/normalizer.py  Raw JSON → CanonicalEvent
-│   ├── pipeline/sessionizer.py      Events → Sessions (30-min gap = new session)
+│   ├── normalization/
+│   │   └── normalizer.py            # Raw JSON → CanonicalEvent
+│   ├── pipeline/
+│   │   └── sessionizer.py           # Events → Sessions (30-min gap = new session)
 │   ├── agents/
-│   │   ├── behavioral.py            IsolationForest + 6 rule flags
-│   │   ├── semantic.py              5-rule OpenAPI spec checker + confidence system
-│   │   └── spatio temporal/
-│   │       ├── spatio_temporal_agent.py   Main + SpatioTemporalPipeline facade
-│   │       ├── agent_framework.py         Directed graph execution engine
-│   │       ├── models.py                  LOCAL CanonicalEvent (different field names — needs adapter)
-│   │       ├── model_registry.py          IsolationForest lifecycle
-│   │       ├── sliding_window.py          Thread-safe rolling time window
-│   │       └── llm_agent_node.py          Optional LLM reasoning (swap Gemini → Claude)
-│   └── coordinator/coordinator.py   Weighted fusion → CoordinatorResult
+│   │   ├── behavioral.py            # IsolationForest + 6 rule flags
+│   │   ├── semantic.py              # 5-rule OpenAPI spec checker + confidence system
+│   │   └── spatio_temporal/
+│   │       ├── spatio_temporal_agent.py   # Main + SpatioTemporalPipeline facade
+│   │       ├── agent_framework.py         # Directed graph execution engine
+│   │       ├── llm_agent_node.py          # Optional LLM reasoning (Gemini/OpenAI)
+│   └── coordinator/
+│       └── coordinator.py           # Weighted fusion → CoordinatorResult
 │
 ├── scripts/
-│   ├── generate_synthetic_data.py   400-event mock dataset (4 attack types)
-│   └── convert_cicids.py            [TO BUILD] CICIDS2017 → CanonicalEvent
+│   ├── generate_synthetic_data.py   # 400-event mock dataset (4 attack types)
+│   └── convert_cicids.py            # CICIDS2017 → CanonicalEvent
 │
 ├── evaluation/
-│   ├── validate_behavioral.py       [TO BUILD] F1 on synthetic — IsoForest vs full agent
-│   ├── validate_full_pipeline.py    [TO BUILD] Ablation table on CICIDS
-│   └── generate_paper_figures.py    [TO BUILD] ROC curves, confusion matrices
+│   ├── plot_utils.py                # Shared plotting utilities
+│   ├── validate_behavioral.py       # F1 on synthetic — IsoForest vs full agent
+│   ├── validate_spatiotemporal.py   # Spatiotemporal agent validation/plots
+│   └── validate_combined.py         # Coordinator/combined agent validation/plots
 │
-├── datasets/                        git-ignored — regenerate locally
-│   ├── mock_logs.json               synthetic data
-│   └── cicids_canonical.json        [TO BUILD] converted CICIDS data
+├── datasets/                        # git-ignored — regenerate locally
+│   ├── mock_logs.json               # synthetic data
+│   ├── cicids_canonical.jsonl       # converted CICIDS data (JSONL)
+│   ├── cicids_ground_truth.json     # ground truth labels for CICIDS
+│   ├── CICIDS2017/                  # raw/unpacked CICIDS2017
+│   └── CICIDS2017-ML/               # additional processed CICIDS2017
 │
-└── configs/                         [TO BUILD] move thresholds here from source
-    └── config.yaml
+└── .env                             # (should be git-ignored)
 ```
 
 ---
