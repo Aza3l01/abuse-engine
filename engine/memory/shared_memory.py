@@ -75,6 +75,8 @@ class LongTermMemory:
         self._endpoint_rates: Dict[str, List[float]] = defaultdict(list)
         # ip -> historical auth failure counts
         self._ip_auth_failures: Dict[str, List[int]] = defaultdict(list)
+        # ip -> historical request counts per batch
+        self._ip_rates: Dict[str, List[float]] = defaultdict(list)
         # batch counter for warm-up tracking
         self._batch_count: int = 0
 
@@ -105,6 +107,15 @@ class LongTermMemory:
         with self._lock:
             vals = self._ip_auth_failures[ip]
             return (sum(vals) / len(vals)) if vals else 0.0
+
+    def record_ip_rate(self, ip: str, count: float) -> None:
+        with self._lock:
+            self._ip_rates[ip].append(count)
+
+    def get_ip_baseline_rate(self, ip: str) -> Optional[float]:
+        with self._lock:
+            vals = self._ip_rates[ip]
+            return (sum(vals) / len(vals)) if vals else None
 
 
 # ---------------------------------------------------------------------------

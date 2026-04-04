@@ -98,15 +98,16 @@ class MetaAgentOrchestrator:
     _SINGLE_AGENT_THRESHOLD    = 0.80   # when only 1/3 agents fires
     _MIN_CONTRIBUTING_AGENTS   = 1      # at least 1 agent with conf >= 0.55
 
-    def __init__(self, memory: SharedMemory, max_workers: int = 3):
+    def __init__(self, memory: SharedMemory, max_workers: int = 3, llm_client=None):
         self.memory = memory
         self.tools = ToolRegistry(memory)
         self.max_workers = max_workers
+        self._llm = llm_client  # Optional[LLMClient]
 
         self._agents: List[BaseAgent] = [
-            VolumeAgent(memory, self.tools),
-            TemporalAgent(memory, self.tools),
-            AuthAgent(memory, self.tools),
+            VolumeAgent(memory, self.tools, llm_client=llm_client),
+            TemporalAgent(memory, self.tools, llm_client=llm_client),
+            AuthAgent(memory, self.tools, llm_client=llm_client),
         ]
 
     # ── Public entry point ─────────────────────────────────────────────────
@@ -135,6 +136,10 @@ class MetaAgentOrchestrator:
 
         # ── Step 3: Conflict resolution & compound detection ─────────────
         verdict = self._fuse(findings, all_evidence)
+
+        # ── Step 4: Optional LLM meta-fusion ─────────────────────────────
+        if self._llm is not None:
+            verdict = self._llm_fuse(verdict, findings, all_evidence)
 
         logger.info(
             "[MetaAgent] Verdict: %s | conf=%.2f | compound=%s",
@@ -323,3 +328,79 @@ class MetaAgentOrchestrator:
                 lines.append(f"    → {ind}")
 
         return "\n".join(lines)
+
+    # ── LLM meta-fusion ────────────────────────────────────────────────────
+
+    def _llm_fuse(
+        self,
+        rule_verdict: FusionVerdict,
+        findings: List[AgentFinding],
+        evidence: List[Dict],
+    ) -> FusionVerdict:
+        """
+        Ask the LLM to review all agent findings and produce a final authoritative
+        verdict. Falls back to rule_verdict on any error.
+        """
+        from engine.llm.prompts import META_SYSTEM_PROMPT, build_meta_user_prompt
+        from engine.llm.client import LLMError
+
+        agent_findings_data = [
+            {
+                "agent": f.agent_name,
+                "is_attack": f.threat_detected,
+                "threat_type": f.threat_type.value,
+                "confidence": f.confidence_score,
+                "indicators": f.indicators[:5],
+            }
+            for f in findings
+        ]
+
+        user = build_meta_user_prompt(
+            agent_findings=agent_findings_data,
+            evidence_board=evidence,
+            rule_is_attack=rule_verdict.is_attack,
+            rule_confidence=rule_verdict.confidence_score,
+            rule_compound=rule_verdict.compound_signals,
+        )
+
+        try:
+            result = self._llm.reason(META_SYSTEM_PROMPT, user)
+        except LLMError as exc:
+            logger.error("[MetaAgent] LLM fusion failed: %s — using rule-based verdict", exc)
+            return rule_verdict
+
+        is_attack   = bool(result.get("is_attack", rule_verdict.is_attack))
+        raw_threat  = str(result.get("threat_type", rule_verdict.threat_type.value))
+        confidence  = float(result.get("confidence", rule_verdict.confidence_score))
+        compound    = result.get("compound_signal")
+        reasoning   = str(result.get("reasoning", ""))
+
+        try:
+            threat_type = ThreatType(raw_threat)
+        except ValueError:
+            threat_type = rule_verdict.threat_type
+            logger.warning("[MetaAgent] LLM returned unknown threat_type '%s'", raw_threat)
+
+        confidence = max(0.0, min(1.0, confidence))
+
+        new_compound = list(rule_verdict.compound_signals)
+        if compound and compound not in new_compound:
+            new_compound.append(f"[LLM] {compound}")
+
+        llm_explanation = rule_verdict.explanation + f"\n\n[LLM Meta-Fusion] {reasoning}"
+
+        logger.debug(
+            "[MetaAgent] LLM fusion: is_attack=%s threat=%s conf=%.2f (rule: %s %.2f)",
+            is_attack, threat_type, confidence,
+            rule_verdict.is_attack, rule_verdict.confidence_score,
+        )
+
+        return FusionVerdict(
+            is_attack=is_attack,
+            threat_type=threat_type if is_attack else ThreatType.NONE,
+            confidence_score=round(confidence, 3),
+            contributing_agents=rule_verdict.contributing_agents,
+            compound_signals=new_compound,
+            explanation=llm_explanation,
+            agent_findings=rule_verdict.agent_findings,
+        )

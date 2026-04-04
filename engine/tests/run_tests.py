@@ -48,6 +48,14 @@ def fresh():
     tools = ToolRegistry(mem)
     return mem, tools
 
+def fresh_post_warmup():
+    """Return mem/tools with batch counter past warmup (>10)."""
+    mem = SharedMemory(window_seconds=60)
+    tools = ToolRegistry(mem)
+    for _ in range(11):
+        mem.ltm.increment_batch_count()
+    return mem, tools
+
 # ── SharedMemory ────────────────────────────────────────────────────────────
 print("\n[SharedMemory]")
 
@@ -135,13 +143,13 @@ def t_vol_clean():
 test("Clean traffic — no threat", t_vol_clean)
 
 def t_vol_dos():
-    mem,tools = fresh()
+    mem,tools = fresh_post_warmup()
     records = [rec(ip="2.2.2.2", offset=i, label="DoS", cat="DoS", attack=True)
-               for i in range(200)]
+               for i in range(500)]
     f = VolumeAgent(mem,tools).run(records)
     assert f.threat_detected and f.threat_type==ThreatType.DOS
     assert f.confidence_score >= 0.8
-test("200-req spike → DoS detected", t_vol_dos)
+test("500-req spike → DoS detected", t_vol_dos)
 
 def t_vol_trace():
     mem,tools = fresh()
@@ -161,11 +169,16 @@ print("\n[TemporalAgent]")
 
 def t_temp_periodic_bot():
     mem,tools = fresh()
-    records = [rec(ip="3.3.3.3", offset=i, label="Bot", cat="Botnet", attack=True)
-               for i in range(20)]
+    # Two IPs with periodic traffic (MIN_PERIODIC_IPS=2)
+    records = (
+        [rec(ip="3.3.3.3", offset=i, label="Bot", cat="Botnet", attack=True)
+         for i in range(20)] +
+        [rec(ip="3.3.3.4", offset=i, label="Bot", cat="Botnet", attack=True)
+         for i in range(20)]
+    )
     f = TemporalAgent(mem,tools).run(records)
     assert f.threat_detected and f.threat_type==ThreatType.BOT_ACTIVITY
-test("Periodic 1-s traffic → bot detected", t_temp_periodic_bot)
+test("Periodic 2-IP traffic → bot detected", t_temp_periodic_bot)
 
 def t_temp_sparse():
     mem,tools = fresh()
@@ -250,17 +263,21 @@ def t_meta_clean():
 test("Clean irregular batch → no HIGH-conf threat", t_meta_clean)
 
 def t_meta_dos():
-    orch = MetaAgentOrchestrator(SharedMemory())
-    records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(200)]
+    mem = SharedMemory()
+    for _ in range(11): mem.ltm.increment_batch_count()
+    orch = MetaAgentOrchestrator(mem)
+    records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(500)]
     v = orch.run(records)
     assert v.is_attack
     assert v.threat_type in (ThreatType.DOS, ThreatType.SCRAPING, ThreatType.BOT_ACTIVITY)
-test("200-req DoS batch → attack detected", t_meta_dos)
+test("500-req DoS batch → attack detected", t_meta_dos)
 
 def t_meta_compound():
-    orch = MetaAgentOrchestrator(SharedMemory())
+    mem = SharedMemory()
+    for _ in range(11): mem.ltm.increment_batch_count()
+    orch = MetaAgentOrchestrator(mem)
     # Periodic high-volume = compound Bot+DoS → Scraping
-    records = [rec(ip="3.3.3.3", offset=i, attack=True, cat="DoS") for i in range(150)]
+    records = [rec(ip="3.3.3.3", offset=i, attack=True, cat="DoS") for i in range(500)]
     v = orch.run(records)
     assert v.is_attack and v.confidence_score >= 0.5
 test("Periodic high-volume → compound signal", t_meta_compound)
@@ -286,8 +303,10 @@ def t_meta_three_findings():
 test("Verdict has 3 agent findings", t_meta_three_findings)
 
 def t_meta_contributing_agents():
-    orch = MetaAgentOrchestrator(SharedMemory())
-    records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(200)]
+    mem = SharedMemory()
+    for _ in range(11): mem.ltm.increment_batch_count()
+    orch = MetaAgentOrchestrator(mem)
+    records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(500)]
     v = orch.run(records)
     assert len(v.contributing_agents) >= 1
 test("contributing_agents populated on attack", t_meta_contributing_agents)

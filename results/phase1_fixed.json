@@ -1,5 +1,5 @@
 {
-  "run_timestamp": "2026-04-03T06:40:29.029350",
+  "run_timestamp": "2026-04-04T11:06:10.760116",
   "config": {
     "data_path": "datasets/processed/",
     "window_size": 500,
@@ -8,36 +8,36 @@
     "evaluation_mode": "batch_majority_label"
   },
   "metrics": {
-    "precision": 0.6338,
-    "recall": 0.9184,
-    "f1": 0.75,
-    "accuracy": 0.6667,
+    "precision": 1.0,
+    "recall": 0.8571,
+    "f1": 0.9231,
+    "accuracy": 0.9222,
     "total_batches": 90,
     "attack_batches": 49,
-    "detected_attacks": 71,
-    "false_positives": 26,
-    "false_negatives": 4
+    "detected_attacks": 42,
+    "false_positives": 0,
+    "false_negatives": 7
   },
   "per_threat": {
     "Benign": {
-      "precision": 0.7895,
-      "recall": 0.3659,
-      "f1": 0.5,
+      "precision": 0.8542,
+      "recall": 1.0,
+      "f1": 0.9213,
       "support": 41
     },
     "DoS": {
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
+      "precision": 1.0,
+      "recall": 0.8571,
+      "f1": 0.9231,
       "support": 49
     }
   },
   "verdicts": [
     {
       "batch": 11,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -47,7 +47,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 12,
@@ -65,9 +65,9 @@
     },
     {
       "batch": 13,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -77,13 +77,13 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 14,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -93,7 +93,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 15,
@@ -111,22 +111,19 @@
     },
     {
       "batch": 16,
-      "is_attack": true,
-      "threat_type": "SCRAPING",
-      "confidence": 0.934,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
-        "VolumeAgent",
         "TemporalAgent"
       ],
-      "compound_signals": [
-        "High Volume + Bot Timing \u2192 Scraping/DDoS Bot"
-      ],
+      "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 17,
@@ -144,22 +141,19 @@
     },
     {
       "batch": 18,
-      "is_attack": true,
-      "threat_type": "SCRAPING",
-      "confidence": 0.934,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
-        "VolumeAgent",
         "TemporalAgent"
       ],
-      "compound_signals": [
-        "High Volume + Bot Timing \u2192 Scraping/DDoS Bot"
-      ],
+      "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 19,
@@ -177,9 +171,9 @@
     },
     {
       "batch": 20,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -189,13 +183,13 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 21,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -205,7 +199,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 22,
@@ -237,9 +231,9 @@
     },
     {
       "batch": 24,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -249,13 +243,13 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 25,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -265,7 +259,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 26,
@@ -283,22 +277,19 @@
     },
     {
       "batch": 27,
-      "is_attack": true,
-      "threat_type": "SCRAPING",
-      "confidence": 0.934,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
-        "VolumeAgent",
         "TemporalAgent"
       ],
-      "compound_signals": [
-        "High Volume + Bot Timing \u2192 Scraping/DDoS Bot"
-      ],
+      "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 28,
@@ -318,9 +309,9 @@
     },
     {
       "batch": 29,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -330,13 +321,13 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 30,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -346,7 +337,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 31,
@@ -366,9 +357,9 @@
     },
     {
       "batch": 32,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -378,7 +369,7 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 33,
@@ -396,9 +387,9 @@
     },
     {
       "batch": 34,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -408,13 +399,13 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 35,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -424,29 +415,27 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 36,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 37,
-      "is_attack": true,
-      "threat_type": "BOT_ACTIVITY",
-      "confidence": 0.891,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
         "TemporalAgent"
       ],
@@ -456,27 +445,24 @@
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 38,
-      "is_attack": true,
-      "threat_type": "SCRAPING",
-      "confidence": 0.934,
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.6,
       "contributing_agents": [
-        "VolumeAgent",
         "TemporalAgent"
       ],
-      "compound_signals": [
-        "High Volume + Bot Timing \u2192 Scraping/DDoS Bot"
-      ],
+      "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.124,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 39,
@@ -685,28 +671,24 @@
     },
     {
       "batch": 52,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 53,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -714,16 +696,14 @@
       ],
       "ground_truth_attack_ratio": 0.002,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 54,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -731,7 +711,7 @@
       ],
       "ground_truth_attack_ratio": 0.17,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 55,
@@ -944,12 +924,10 @@
     },
     {
       "batch": 68,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -957,16 +935,14 @@
       ],
       "ground_truth_attack_ratio": 0.748,
       "majority_label": "ATTACK",
-      "correct": true
+      "correct": false
     },
     {
       "batch": 69,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -974,7 +950,7 @@
       ],
       "ground_truth_attack_ratio": 0.002,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 70,
@@ -1026,28 +1002,24 @@
     },
     {
       "batch": 73,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 74,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -1055,48 +1027,42 @@
       ],
       "ground_truth_attack_ratio": 0.002,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 75,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 76,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "Benign"
       ],
       "ground_truth_attack_ratio": 0.0,
       "majority_label": "BENIGN",
-      "correct": false
+      "correct": true
     },
     {
       "batch": 77,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -1104,7 +1070,7 @@
       ],
       "ground_truth_attack_ratio": 0.654,
       "majority_label": "ATTACK",
-      "correct": true
+      "correct": false
     },
     {
       "batch": 78,
@@ -1333,12 +1299,10 @@
     },
     {
       "batch": 92,
-      "is_attack": true,
-      "threat_type": "DOS",
-      "confidence": 0.82,
-      "contributing_agents": [
-        "VolumeAgent"
-      ],
+      "is_attack": false,
+      "threat_type": "NONE",
+      "confidence": 0.0,
+      "contributing_agents": [],
       "compound_signals": [],
       "ground_truth_categories": [
         "DoS",
@@ -1346,7 +1310,7 @@
       ],
       "ground_truth_attack_ratio": 0.782,
       "majority_label": "ATTACK",
-      "correct": true
+      "correct": false
     },
     {
       "batch": 93,

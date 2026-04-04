@@ -138,9 +138,10 @@ class Evaluator:
         self._y_true.append(int(majority_is_attack))
         self._y_pred.append(int(verdict.is_attack))
         self._y_true_threat.append(majority_category)
-        self._y_pred_threat.append(
-            verdict.threat_type.value if verdict.is_attack else "Benign"
-        )
+        # Normalise predicted threat label to match ground-truth casing
+        # (e.g. ThreatType.DOS.value = "DOS" but ground truth is "DoS")
+        pred_label = verdict.threat_type.value if verdict.is_attack else "Benign"
+        self._y_pred_threat.append(self._normalise_threat_label(pred_label))
 
     def add(
         self,
@@ -152,9 +153,8 @@ class Evaluator:
         self._y_true.append(int(ground_truth_is_attack))
         self._y_pred.append(int(verdict.is_attack))
         self._y_true_threat.append(ground_truth_category)
-        self._y_pred_threat.append(
-            verdict.threat_type.value if verdict.is_attack else "Benign"
-        )
+        pred_label = verdict.threat_type.value if verdict.is_attack else "Benign"
+        self._y_pred_threat.append(self._normalise_threat_label(pred_label))
 
     def compute(self) -> EvalResult:
         y_true = np.array(self._y_true)
@@ -209,6 +209,22 @@ class Evaluator:
 
     def reset(self) -> None:
         self.__init__()
+
+    # Map ThreatType enum values → CICIDS ground-truth category names
+    _THREAT_LABEL_MAP = {
+        "DOS": "DoS",
+        "BRUTE_FORCE": "Brute Force",
+        "CREDENTIAL_STUFFING": "Brute Force",   # CICIDS has no "credential stuffing" category
+        "BOT_ACTIVITY": "Botnet",
+        "SCRAPING": "DoS",                       # compound DoS+bot → still DoS in ground truth
+        "UNKNOWN_ABUSE": "Other",
+        "NONE": "Benign",
+    }
+
+    @classmethod
+    def _normalise_threat_label(cls, label: str) -> str:
+        """Map predicted ThreatType enum values to CICIDS ground-truth casing."""
+        return cls._THREAT_LABEL_MAP.get(label, label)
 
 
 # ---------------------------------------------------------------------------

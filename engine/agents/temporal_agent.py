@@ -44,6 +44,7 @@ class TemporalAgent(BaseAgent):
     MIN_EVENTS_FOR_ANALYSIS   = 10       # raised from 8 — need more data for reliable periodicity
     MIN_PERIODIC_IPS          = 2        # require ≥ 2 IPs showing periodicity
     MIN_TIMESTAMP_SPAN_MS     = 200.0    # skip if whole batch spans < 200ms (synthetic artifact)
+    MIN_IAT_RESOLUTION_MS     = 500.0    # skip per-IP periodicity if median IAT < this (timestamp resolution too low)
     OFF_HOURS                 = set(range(0, 6))   # 00:00 – 05:59 UTC
     OFF_HOURS_DOMINANT_RATIO  = 0.85     # raised from 0.70 — need strong majority
 
@@ -129,6 +130,20 @@ class TemporalAgent(BaseAgent):
             if len(timestamps) < self.MIN_EVENTS_FOR_ANALYSIS:
                 continue
 
+            # ── Resolution guard: skip IPs where timestamps lack sufficient
+            #    granularity (e.g. all same-second in CICIDS) — this creates
+            #    artificial zero-IAT patterns that look periodic but aren't.
+            import numpy as np
+            iats = list(np.diff(sorted(timestamps)))
+            if iats:
+                median_iat = float(np.median(iats))
+                if median_iat < self.MIN_IAT_RESOLUTION_MS:
+                    ctx.log(
+                        f"INVESTIGATE: skipping {ip} — median IAT={median_iat:.0f}ms "
+                        f"< {self.MIN_IAT_RESOLUTION_MS}ms (timestamp resolution too low)"
+                    )
+                    continue
+
             # ── Periodicity (FFT) ────────────────────────────────────────
             peri = self.tools.call("detect_periodicity", timestamps_ms=timestamps)
             periodicity_results[ip] = peri
@@ -148,8 +163,6 @@ class TemporalAgent(BaseAgent):
                     ctx.confidence_score = max(ctx.confidence_score, bot_conf * 0.6)
 
             # ── KS-test vs human distribution ───────────────────────────
-            import numpy as np
-            iats = list(np.diff(sorted(timestamps)))
             if len(iats) >= 6:
                 combined = _HUMAN_IAT_SAMPLE + iats
                 ks_result = self.tools.call(

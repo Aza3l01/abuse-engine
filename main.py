@@ -52,6 +52,8 @@ def run(
     output_path: str = "results/phase1.json",
     verbose: bool = False,
     warmup_batches: int = 10,
+    llm_url: str = "",
+    llm_model: str = "qwen2.5:7b",
 ) -> None:
 
     if verbose:
@@ -66,7 +68,17 @@ def run(
 
     # ── Setup ────────────────────────────────────────────────────────────────
     memory = SharedMemory(window_seconds=60)
-    orchestrator = MetaAgentOrchestrator(memory)
+
+    llm_client = None
+    if llm_url:
+        from engine.llm.client import LLMClient
+        llm_client = LLMClient(base_url=llm_url, model=llm_model)
+        logger.info("LLM enabled: model=%s endpoint=%s", llm_model, llm_url)
+        if not llm_client.is_available():
+            logger.warning("LLM endpoint unreachable — falling back to rule-based")
+            llm_client = None
+
+    orchestrator = MetaAgentOrchestrator(memory, llm_client=llm_client)
     ingestion = CICIDSIngestion(data_path, window_size=window_size, max_records=max_records)
     evaluator = Evaluator()
 
@@ -142,6 +154,7 @@ def run(
                 "max_records": max_records,
                 "warmup_batches": warmup_batches,
                 "evaluation_mode": "batch_majority_label",
+                "llm_model": llm_model if llm_url else None,
             },
             "metrics": {
                 "precision":         result.precision,
@@ -194,6 +207,17 @@ def main():
         "--verbose", "-v", action="store_true",
         help="Enable debug logging and print all verdicts",
     )
+    parser.add_argument(
+        "--llm-url",
+        default="",
+        help="OpenAI-compatible LLM endpoint (e.g. http://localhost:11434/v1). "
+             "If omitted, rule-based engine runs without LLM.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default="qwen2.5:7b",
+        help="Model name to request from the LLM endpoint (default: qwen2.5:7b)",
+    )
     args = parser.parse_args()
 
     run(
@@ -203,6 +227,8 @@ def main():
         output_path=args.output,
         verbose=args.verbose,
         warmup_batches=args.warmup_batches,
+        llm_url=args.llm_url,
+        llm_model=args.llm_model,
     )
 
 

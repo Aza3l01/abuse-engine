@@ -32,28 +32,32 @@ from schemas.models import AgentFinding, LogRecord, ThreatType
 class VolumeAgent(BaseAgent):
 
     # ── Tunable thresholds (calibrated for CICIDS 2017 / 500-record windows) ──
-    RATE_SPIKE_THRESHOLD   = 3.5      # z-score (raised from 3.0 — tighter)
+    RATE_SPIKE_THRESHOLD   = 3.5      # z-score
     MIN_REQUESTS_TO_ANALYSE = 5
-    HIGH_RATE_ABSOLUTE     = 300      # req / window from a SINGLE IP (was 100)
-    DOMINANT_IP_RATIO      = 0.60     # single IP must own >60% of traffic
+    HIGH_RATE_ABSOLUTE     = 450      # req / window from a SINGLE IP
+    DOMINANT_IP_RATIO      = 0.90     # single IP must own >90% of traffic
     MAX_IP_DIVERSITY       = 5        # if >5 unique IPs contribute equally → benign spread
     WARMUP_BATCHES         = 10       # first N batches only learn, never alert
     MIN_ZSCORE_CONFIDENCE  = 0.55     # z-scores alone need this confidence to fire
+    HIGH_LATENCY_BENIGN_MS = 6500.0   # single-IP batches with avg latency above this are likely long-lived benign sessions
 
     def observe(self, ctx: AgentContext) -> None:
-        """Compute per-IP request counts, endpoint rates, and diversity metrics."""
+        """Compute per-IP request counts, endpoint rates, diversity metrics, and avg latency."""
         ip_counts: Counter = Counter()
         endpoint_counts: Counter = Counter()
+        total_latency = 0.0
 
         for r in ctx.records:
             ip_counts[r.ip] += 1
             ep = r.endpoint_template or r.endpoint
             endpoint_counts[ep] += 1
+            total_latency += r.latency
 
         total = len(ctx.records)
         top_ip, top_count = ip_counts.most_common(1)[0] if ip_counts else ("", 0)
         dominant_ratio = top_count / total if total > 0 else 0.0
         unique_ips = len(ip_counts)
+        avg_latency = total_latency / total if total > 0 else 0.0
 
         ctx.raw_metrics["ip_counts"]       = dict(ip_counts.most_common(10))
         ctx.raw_metrics["endpoint_counts"] = dict(endpoint_counts.most_common(10))
@@ -62,10 +66,12 @@ class VolumeAgent(BaseAgent):
         ctx.raw_metrics["top_ip_count"]    = top_count
         ctx.raw_metrics["dominant_ratio"]  = dominant_ratio
         ctx.raw_metrics["unique_ips"]      = unique_ips
+        ctx.raw_metrics["avg_latency"]     = avg_latency
 
         ctx.log(
             f"OBSERVE: {total} reqs | unique_ips={unique_ips} | "
-            f"top_ip={top_ip} ({top_count} reqs, {dominant_ratio:.0%})"
+            f"top_ip={top_ip} ({top_count} reqs, {dominant_ratio:.0%}) | "
+            f"avg_lat={avg_latency:.0f}ms"
         )
 
     def orient(self, ctx: AgentContext) -> None:
@@ -119,12 +125,22 @@ class VolumeAgent(BaseAgent):
 
         # Absolute single-source flood
         if top_count >= self.HIGH_RATE_ABSOLUTE and dominant_ratio >= self.DOMINANT_IP_RATIO:
-            ctx.hypothesis = "high_absolute_volume"
-            ctx.threat_type = ThreatType.DOS
-            ctx.log(
-                f"HYPOTHESIZE: single-source HIGH volume — {top_count} reqs from "
-                f"{ctx.raw_metrics['top_ip']} ({dominant_ratio:.0%} of window)"
-            )
+            # Latency guard: single-IP batches with very high latency are likely
+            # long-lived benign sessions, not DoS floods
+            avg_latency = ctx.raw_metrics.get("avg_latency", 0.0)
+            if unique_ips <= 2 and avg_latency > self.HIGH_LATENCY_BENIGN_MS:
+                ctx.hypothesis = "high_latency_single_ip_benign"
+                ctx.log(
+                    f"HYPOTHESIZE: single-IP high volume BUT avg_latency={avg_latency:.0f}ms "
+                    f"> {self.HIGH_LATENCY_BENIGN_MS}ms — likely long-lived benign session"
+                )
+            else:
+                ctx.hypothesis = "high_absolute_volume"
+                ctx.threat_type = ThreatType.DOS
+                ctx.log(
+                    f"HYPOTHESIZE: single-source HIGH volume — {top_count} reqs from "
+                    f"{ctx.raw_metrics['top_ip']} ({dominant_ratio:.0%} of window)"
+                )
         elif total >= self.MIN_REQUESTS_TO_ANALYSE:
             ctx.hypothesis = "possible_rate_anomaly"
             ctx.log(f"HYPOTHESIZE: checking rate anomaly (total={total})")
@@ -134,7 +150,8 @@ class VolumeAgent(BaseAgent):
 
     def investigate(self, ctx: AgentContext) -> None:
         """Compute z-scores against baselines; verify dominant-IP evidence."""
-        if ctx.hypothesis in ("warmup_learning", "distributed_traffic_benign", "insufficient_volume"):
+        if ctx.hypothesis in ("warmup_learning", "distributed_traffic_benign",
+                               "insufficient_volume", "high_latency_single_ip_benign"):
             # Update LTM but do not raise confidence
             endpoint_counts = ctx.raw_metrics.get("endpoint_counts", {})
             for ep, count in endpoint_counts.items():
@@ -180,6 +197,10 @@ class VolumeAgent(BaseAgent):
             ctx.confidence_score = max(ctx.confidence_score, 0.82)
             self._post_evidence("dos:high_volume", top_count, 0.82, ["volume", "dos"])
 
+        # Update per-IP rates in LTM for future historical comparisons
+        for ip, cnt in ip_counts.items():
+            self.memory.ltm.record_ip_rate(ip, float(cnt))
+
         # Aggregate z-score confidence (only if dominant IP is also suspicious)
         significant = [v for v in z_scores.values() if v.get("significant")]
         if significant and dominant_ratio >= self.DOMINANT_IP_RATIO:
@@ -200,7 +221,8 @@ class VolumeAgent(BaseAgent):
 
     def evaluate(self, ctx: AgentContext) -> LoopDecision:
         if ctx.hypothesis in ("warmup_learning", "insufficient_volume",
-                               "distributed_traffic_benign"):
+                               "distributed_traffic_benign",
+                               "high_latency_single_ip_benign"):
             return LoopDecision.INSUFFICIENT_DATA
 
         if ctx.confidence_score >= 0.75 and ctx.indicators:
