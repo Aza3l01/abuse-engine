@@ -19,6 +19,165 @@ APISentry runs autonomous detection agents that each follow an OODA reasoning lo
 
 ---
 
+## Architecture
+
+### Research Prototype — Phase 1 (current)
+
+```
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                    CICIDS 2017 — Processed CSV                          │
+ │              50 000 records  ·  100 batches  ·  Phase 1                 │
+ └───────────────────────────┬─────────────────────────────────────────────┘
+                             │
+                             ▼
+ ┌───────────────────────────────────────────────────────────────────────────┐
+ │  CICIDSIngestion  —  sliding window · 500 records / batch                 │
+ └──────────────────┬────────────────────────────────────────────────────────┘
+                    │ each batch
+        ┌───────────┴──────────────────────────────────────────┐
+        │                                                      │
+        ▼                                                      ▼
+ ┌──────────────────────────────────────┐    ┌────────────────────────────────────────────────────────────┐
+ │   Shared Memory  (in-process dicts)  │    │   Detection Agents  —  ThreadPoolExecutor (parallel)        │
+ │                                      │    │                                                            │
+ │  STM  sliding window counters        │◄──►│  ┌─────────────────────────────────────────────────────┐  │
+ │  LTM  per-IP rate baselines          │    │  │ VolumeAgent          OODA loop · max 3 iterations   │  │
+ │  EB   Evidence Board (blackboard)    │◄──►│  │ dom_ratio · rate · latency guard                    │  │
+ └──────────────────────────────────────┘    │  │ Detects: DoS · DDoS · Scraping                      │  │
+                                             │  ├─────────────────────────────────────────────────────┤  │
+ ┌──────────────────────────────────────┐    │  │ TemporalAgent        OODA loop · max 3 iterations   │  │
+ │   Tool Registry                      │    │  │ FFT · KS-test · IAT resolution guard                │  │
+ │                                      │◄···│  │ Detects: Bot activity · Off-hours access            │  │
+ │  run_statistical_test                │    │  ├─────────────────────────────────────────────────────┤  │
+ │  detect_periodicity                  │    │  │ AuthAgent            OODA loop · max 3 iterations   │  │
+ │  query_historical_baseline           │    │  │ Failure streaks · success rate ratio                │  │
+ │  post/read_evidence_board            │    │  │ Detects: Brute force · Credential stuffing          │  │
+ └──────────────────────────────────────┘    │  └─────────────────────────────────────────────────────┘  │
+                                             └───────────────────────────┬────────────────────────────────┘
+ ┌──────────────────────────────────────┐                                │ AgentFinding ×3
+ │   LLM  (optional)                    │◄·······························┤ per-agent conclude override
+ │   Ollama · qwen2.5:7b                │◄·······························┐ meta-fusion override
+ │   Falls back to rules on error       │                                │
+ └──────────────────────────────────────┘                                ▼
+ ┌───────────────────────────────────────────────────────────────────────────┐
+ │   MetaAgentOrchestrator                                                   │
+ │                                                                           │
+ │   1  Compound Signal Detection   (DoS + Bot Timing → Scraping Bot …)      │
+ │         └─► 2  Weighted Confidence Fusion                                 │
+ │                   attack thresh 0.60  ·  single-agent thresh 0.80         │
+ │                   └─► 3  LLM Meta-Fusion  (optional, falls back on error) │
+ └───────────────────────────────────────┬───────────────────────────────────┘
+                                         │ FusionVerdict
+                                         ▼
+ ┌──────────────────────────┐
+ │   Evaluator              │
+ │   batch majority-label   │
+ └──────────┬───────────────┘
+            ▼
+ ┌────────────────────────────────────────────────────────┐
+ │  results/phase1.json                                   │
+ │  Accuracy 92.22%  ·  Precision 1.00  ·  Recall 0.923  │
+ │  F1 0.96  ·  FPR 0%  ·  32/32 tests passing           │
+ └────────────────────────────────────────────────────────┘
+
+ Legend:  ──►  data flow     ◄──►  read + write     ···►  optional / async
+```
+
+### Product Vision — Full System (future)
+
+```
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │  ①  INGESTION                                                                   │
+ │     AWS API Gateway  ·  Kong Gateway  ·  Nginx  ──►  Kafka Stream (real-time)   │
+ └──────────────────────────────────────┬──────────────────────────────────────────┘
+                                        │
+                                        ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │  ②  PARSE & ENRICH                                                              │
+ │     Universal Log Parser  ──►  Feature Extractor  ──►  Session Stitcher         │
+ │     (rate counters · entropy · auth streaks)           (IP + UA + API Key)      │
+ └───────────────────────┬─────────────────────────────────────────────────────────┘
+                         │
+          ┌──────────────┴──────────────────────────────┐
+          │                                             │
+          ▼                                             ▼ (async, hourly)
+ ┌────────────────────────────────────┐   ┌─────────────────────────────────────┐
+ │  ③  SHARED MEMORY — THREE TIERS   │   │  ④  ThreatIntelSyncer               │
+ │                                    │   │     Background async task            │
+ │  Redis  — STM                      │   │     AbuseIPDB · AlienVault OTX       │
+ │    Active sessions · Evidence Board│   │     Feodo Tracker · GreyNoise        │
+ │    TTL 1h · latency <1ms           │   │     → warms LTM reputation cache     │
+ │                                    │   └──────────────┬──────────────────────┘
+ │  PostgreSQL  — LTM                 │◄─────────────────┘  writes reputation
+ │    IP/key/endpoint baselines       │
+ │    Geo profiles · latency <10ms    │
+ │                                    │
+ │  S3 / Parquet  — Archive           │
+ │    90-day log history              │
+ │    Model training data             │
+ └──────────────┬─────────────────────┘
+                │  read + write
+                ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │  ⑤  DETECTION AGENTS  —  parallel, trigger-based                               │
+ │                                                                                 │
+ │  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐  │
+ │  │ VolumeAgent          │  │ TemporalAgent         │  │ AuthAgent            │  │
+ │  │ DoS · DDoS · Scraping│  │ Bot Periodicity       │  │ Brute Force          │  │
+ │  │ Isolation Forest     │  │ Off-hours access      │  │ Credential Stuffing  │  │
+ │  │ EWMA · Z-score       │  │ FFT · KS-test · CUSUM │  │ Token sharing        │  │
+ │  └──────────────────────┘  └──────────────────────┘  └──────────────────────┘  │
+ │  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐  │
+ │  │ SequenceAgent        │  │ PayloadAgent          │  │ GeoIPAgent           │  │
+ │  │ BOLA · BFLA          │  │ SQLi · Path Traversal │  │ Impossible Travel    │  │
+ │  │ Enumeration          │  │ XSS · Response size   │  │ VPN/Tor/Datacenter   │  │
+ │  │ Markov · LSTM/GRU    │  │ anomaly               │  │ MaxMind GeoLite2     │  │
+ │  └──────────────────────┘  └──────────────────────┘  └──────────────────────┘  │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ KnowledgeAgent  (passive — answers queries, does not produce verdicts)   │   │
+ │  │ Active threat memory · cross-batch pattern synthesis                     │   │
+ │  │ Confidence-gated write (conf > 0.85) · time-decay on old signatures      │   │
+ │  └──────────────────────────────────────────────────────────────────────────┘   │
+ └─────────────────────────────┬───────────────────────────────────────────────────┘
+          ▲                    │ AgentFinding ×6
+          │  ···  ⑥  Tool Registry  (dynamic calls during investigate())
+          │       run_statistical_test · detect_periodicity · lookup_geoip
+          │       query_ip_reputation · calculate_similarity · get_session_history
+          │       query_knowledge_base · update_knowledge_base
+          │
+          │  ···  LLM  (GPU server — Ollama / vLLM · qwen2.5:7b)
+          │       Per-agent verdict override · falls back to rules on error
+          │
+          ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │  ⑦  MetaAgentOrchestrator  —  LangGraph                                        │
+ │                                                                                 │
+ │   Compound Signal Detection  (5+ compound rules)                                │
+ │         └─►  XGBoost Stacking Fusion  (trained on agent confidence vectors)     │
+ │                   └─►  Conflict Resolution + Active Re-investigation            │
+ │                               └─►  LLM Authoritative Verdict                   │
+ └───────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │ FusionVerdict
+                    ┌────────────────────┼─────────────────────┐
+                    │                    │                      │
+                    ▼                    ▼                      ▼
+ ┌──────────────────────────┐  ┌─────────────────────┐  ┌──────────────────────────┐
+ │  ⑧a  ALERTING            │  │  ⑧b  ENFORCEMENT    │  │  ⑧c  STORAGE            │
+ │                          │  │                     │  │                          │
+ │  Dashboard               │  │  WAF Rule Injection │  │  Threat DB               │
+ │  (Next.js + D3.js)       │  │  AWS WAF · Cloudflare  │  Case history            │
+ │                          │  │  5–30s to block     │  │  Evidence chains         │
+ │  Alerts                  │  │                     │  │  Agent performance logs  │
+ │  Slack · PagerDuty       │  │  Redis Blocklist    │  │                          │
+ │  Email                   │  │  Gateway plugin     │  │                          │
+ │                          │  │  <1ms enforcement   │  │                          │
+ └──────────────────────────┘  └─────────────────────┘  └──────────────────────────┘
+
+ Legend:  ──►  data flow     ◄──►  read + write     ···  optional / async / dynamic
+```
+
+---
+
 ## Directory Structure
 
 ```
