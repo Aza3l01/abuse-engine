@@ -130,3 +130,13 @@ After the IAT resolution fix, TemporalAgent correctly avoids firing on low-resol
 
 ### Decision deferred to product phase
 The research prototype validates detection quality. Blocking mechanism design (which option, which gateway plugins) is a product-phase decision after the paper is published.
+
+### Tier Pricing That Actually Gets Early Adopters In
+Pilot (Early Adopter) — ₹0 for 60 days, then ₹3,999/month
+Detection only, your first 5 clients, you do the onboarding manually, weekly check-in call included. This is how you learn what clients actually care about.
+Starter — ₹4,999/month (~$60)
+Detection + rules push blocking (AWS WAF/Cloudflare), weekly email report, up to 10M API calls/month. This is your actual entry product.
+Growth — ₹14,999/month (~$180)
+Everything in Starter + middleware SDK blocking, Slack alerts, up to 50M calls/month, priority support.
+Pro — ₹29,999/month (~$360)
+Everything in Growth + custom thresholds, quarterly business review, up to 200M calls/month.
