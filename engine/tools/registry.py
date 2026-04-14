@@ -30,9 +30,10 @@ from schemas.models import EvidenceEntry, LogRecord
 class ToolRegistry:
     """Holds all callable tools. Agents receive a registry instance."""
 
-    def __init__(self, memory: SharedMemory):
+    def __init__(self, memory: SharedMemory, knowledge_agent=None):
         self._memory = memory
         self._tools: Dict[str, Callable] = {}
+        self._knowledge = knowledge_agent
         self._register_all()
 
     def call(self, name: str, **kwargs) -> Any:
@@ -181,6 +182,20 @@ class ToolRegistry:
             ]
 
         # ── REGISTER ────────────────────────────────────────────────────────
+        ka = self._knowledge
+
+        def query_knowledge_base(ip: str, endpoint: Optional[str] = None) -> Dict[str, Any]:
+            """Return reputation prior for an IP from KnowledgeAgent."""
+            if ka is None:
+                return {"known_bad": False, "prior_confidence": 0.0,
+                        "history_summary": "KnowledgeAgent not initialised.", "owasp_context": None}
+            return ka.query(ip=ip, endpoint=endpoint)
+
+        def update_knowledge_base(ip: str, outcome: bool, confidence: float) -> None:
+            """Record a confirmed verdict outcome for an IP."""
+            if ka is not None:
+                ka.update(ip=ip, outcome=outcome, confidence=confidence)
+
         self._tools = {
             "query_historical_baseline": query_historical_baseline,
             "get_session_history": get_session_history,
@@ -192,4 +207,6 @@ class ToolRegistry:
             "post_to_evidence_board": post_to_evidence_board,
             "read_evidence_board": read_evidence_board,
             "query_agent": query_agent,
+            "query_knowledge_base": query_knowledge_base,
+            "update_knowledge_base": update_knowledge_base,
         }

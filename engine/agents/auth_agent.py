@@ -182,8 +182,10 @@ class AuthAgent(BaseAgent):
             )
 
         if streaky_ips:
-            streak_conf = min(1.0, max(s for _, s in streaky_ips) / 50.0)
-            ctx.confidence_score = max(ctx.confidence_score, streak_conf + 0.4)
+            # Scale so that a streak equal to BRUTE_FORCE_FAILURE_STREAK (10) already
+            # reaches the MetaAgent single-agent threshold (0.80): 10/25 + 0.40 = 0.80.
+            streak_conf = min(1.0, max(s for _, s in streaky_ips) / 25.0 + 0.40)
+            ctx.confidence_score = max(ctx.confidence_score, streak_conf)
             self._post_evidence(
                 "auth:brute_force",
                 {"ips": streaky_ips},

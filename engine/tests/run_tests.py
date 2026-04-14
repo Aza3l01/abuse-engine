@@ -49,11 +49,20 @@ def fresh():
     return mem, tools
 
 def fresh_post_warmup():
-    """Return mem/tools with batch counter past warmup (>10)."""
+    """Return mem/tools with LTM distribution stable (batch stats seeded for all agents)."""
     mem = SharedMemory(window_seconds=60)
     tools = ToolRegistry(mem)
-    for _ in range(11):
+    # Seed 15 batches of realistic benign stats so is_distribution_stable() returns True
+    # and adaptive thresholds kick in using these distributions.
+    for _ in range(15):
         mem.ltm.increment_batch_count()
+        # Benign VolumeAgent stats: dom_ratio ~0.57, top_count ~286, avg_latency ~6800ms
+        mem.ltm.record_batch_stats("VolumeAgent", {
+            "dom_ratio": 0.57, "top_count": 286.0, "avg_latency": 6800.0,
+        })
+        mem.ltm.record_batch_stats("TemporalAgent", {
+            "off_hours_ratio": 0.05, "periodic_ip_count": 0.0,
+        })
     return mem, tools
 
 # ── SharedMemory ────────────────────────────────────────────────────────────
@@ -264,7 +273,10 @@ test("Clean irregular batch → no HIGH-conf threat", t_meta_clean)
 
 def t_meta_dos():
     mem = SharedMemory()
-    for _ in range(11): mem.ltm.increment_batch_count()
+    for _ in range(15):
+        mem.ltm.increment_batch_count()
+        mem.ltm.record_batch_stats("VolumeAgent", {"dom_ratio": 0.57, "top_count": 286.0, "avg_latency": 6800.0})
+        mem.ltm.record_batch_stats("TemporalAgent", {"off_hours_ratio": 0.05, "periodic_ip_count": 0.0})
     orch = MetaAgentOrchestrator(mem)
     records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(500)]
     v = orch.run(records)
@@ -274,7 +286,10 @@ test("500-req DoS batch → attack detected", t_meta_dos)
 
 def t_meta_compound():
     mem = SharedMemory()
-    for _ in range(11): mem.ltm.increment_batch_count()
+    for _ in range(15):
+        mem.ltm.increment_batch_count()
+        mem.ltm.record_batch_stats("VolumeAgent", {"dom_ratio": 0.57, "top_count": 286.0, "avg_latency": 6800.0})
+        mem.ltm.record_batch_stats("TemporalAgent", {"off_hours_ratio": 0.05, "periodic_ip_count": 0.0})
     orch = MetaAgentOrchestrator(mem)
     # Periodic high-volume = compound Bot+DoS → Scraping
     records = [rec(ip="3.3.3.3", offset=i, attack=True, cat="DoS") for i in range(500)]
@@ -299,12 +314,15 @@ test("Verdict has explanation string", t_meta_explanation)
 def t_meta_three_findings():
     orch = MetaAgentOrchestrator(SharedMemory())
     v = orch.run([rec() for _ in range(10)])
-    assert len(v.agent_findings) == 3
-test("Verdict has 3 agent findings", t_meta_three_findings)
+    assert len(v.agent_findings) == 6
+test("Verdict has 6 agent findings", t_meta_three_findings)
 
 def t_meta_contributing_agents():
     mem = SharedMemory()
-    for _ in range(11): mem.ltm.increment_batch_count()
+    for _ in range(15):
+        mem.ltm.increment_batch_count()
+        mem.ltm.record_batch_stats("VolumeAgent", {"dom_ratio": 0.57, "top_count": 286.0, "avg_latency": 6800.0})
+        mem.ltm.record_batch_stats("TemporalAgent", {"off_hours_ratio": 0.05, "periodic_ip_count": 0.0})
     orch = MetaAgentOrchestrator(mem)
     records = [rec(ip="2.2.2.2", offset=i, attack=True, cat="DoS") for i in range(500)]
     v = orch.run(records)

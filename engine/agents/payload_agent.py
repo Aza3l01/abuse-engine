@@ -1,0 +1,258 @@
+"""
+APISentry Payload Agent
+
+Mandate: Detect port scanning, endpoint enumeration, and injection patterns.
+Primary signal: Shannon entropy of endpoint distribution per IP.
+
+OODA logic:
+  OBSERVE     → compute per-IP endpoint entropy + request counts
+  ORIENT      → fetch LTM entropy baseline; check for known-bad IPs from board
+  HYPOTHESIZE → "scan/enumeration" if an IP targets many distinct endpoints
+  INVESTIGATE → entropy z-score vs baseline; verify request density
+  EVALUATE    → conclude on threshold
+  CONCLUDE    → emit finding
+
+CICIDS compatibility:
+  All endpoints are /port_X. A port scan IP hits many distinct /port_X
+  targets in a single batch. Shannon entropy is high for scan IPs, low
+  for benign IPs that repeatedly hit the same endpoint.
+
+Adaptive thresholds:
+  ENTROPY_THRESHOLD ← ltm_entropy_mean + 2σ  (after warmup)
+  MIN_DISTINCT_ENDPOINTS ← fixed (semantic definition of enumeration)
+"""
+
+from __future__ import annotations
+from collections import Counter, defaultdict
+from typing import Dict, List
+
+from engine.agents.base_agent import AgentContext, BaseAgent, LoopDecision
+from engine.memory.shared_memory import SharedMemory
+from engine.tools.registry import ToolRegistry
+from schemas.models import AgentFinding, LogRecord, ThreatType
+
+
+class PayloadAgent(BaseAgent):
+
+    # Cold-start fallbacks
+    ENTROPY_THRESHOLD       = 2.0    # bits — high entropy = many unique endpoints
+    MIN_DISTINCT_ENDPOINTS  = 5      # minimum distinct endpoints to call a scan
+    MIN_REQUESTS_PER_IP     = 5      # ignore low-volume IPs (noise)
+    MAX_IP_ENTROPY_PAIRS    = 20     # cap how many IPs we fully analyse
+    MIN_WARMUP_BATCHES      = 15     # system-level warmup guard (global batch count)
+
+    # Well-known service ports that appear in legitimate multi-protocol traffic.
+    # Having entropy across THESE ports alone does NOT indicate a port scan.
+    _BENIGN_SERVICE_PORTS = frozenset({
+        21, 22, 23, 25, 53, 67, 68, 80, 110, 123, 137, 138, 139,
+        143, 389, 443, 445, 465, 587, 993, 995, 1080, 1433, 1521,
+        3306, 3389, 5432, 5900, 6379, 8080, 8443, 8888, 27017,
+    })
+
+    def _update_adaptive_thresholds(self) -> None:
+        """Adapt entropy threshold from LTM benign baseline."""
+        mean, std = self.memory.ltm.get_batch_distribution("PayloadAgent", "max_ip_entropy")
+        if mean is not None and std is not None:
+            self.ENTROPY_THRESHOLD = mean + 2.0 * std
+
+    def observe(self, ctx: AgentContext) -> None:
+        """Compute per-IP endpoint counts and Shannon entropy."""
+        ip_endpoints: Dict[str, Counter] = defaultdict(Counter)
+        for r in ctx.records:
+            ep = r.endpoint_template or r.endpoint
+            ip_endpoints[r.ip][ep] += 1
+
+        per_ip_entropy: Dict[str, float] = {}
+        per_ip_distinct: Dict[str, int] = {}
+        import math
+        for ip, ep_counts in ip_endpoints.items():
+            # Exclude ephemeral/randomised source ports (>= 49152) from entropy.
+            # Port scans target destination service ports (< 49152 overwhelmingly);
+            # ephemeral ports are client-side TCP connection IDs, not scan targets.
+            scan_ep_counts: Counter = Counter()
+            for ep, cnt in ep_counts.items():
+                try:
+                    port = int(ep.split("/port_")[-1].split("/")[0])
+                    if port < 49152:
+                        scan_ep_counts[ep] = cnt
+                except (ValueError, IndexError):
+                    scan_ep_counts[ep] = cnt  # non-port endpoint kept as-is
+            total = sum(scan_ep_counts.values())
+            if total < self.MIN_REQUESTS_PER_IP:
+                continue
+            entropy = -sum(
+                (c / total) * math.log2(c / total)
+                for c in scan_ep_counts.values()
+            )
+            per_ip_entropy[ip] = round(entropy, 4)
+            per_ip_distinct[ip] = len(scan_ep_counts)
+
+        max_entropy_ip = max(per_ip_entropy, key=per_ip_entropy.get) if per_ip_entropy else None
+        max_entropy = per_ip_entropy.get(max_entropy_ip, 0.0) if max_entropy_ip else 0.0
+
+        ctx.raw_metrics["ip_endpoints"]     = {ip: dict(c) for ip, c in ip_endpoints.items()}
+        ctx.raw_metrics["per_ip_entropy"]   = per_ip_entropy
+        ctx.raw_metrics["per_ip_distinct"]  = per_ip_distinct
+        ctx.raw_metrics["max_entropy_ip"]   = max_entropy_ip
+        ctx.raw_metrics["max_entropy"]      = max_entropy
+        ctx.raw_metrics["total_distinct_endpoints"] = len(
+            {r.endpoint_template or r.endpoint for r in ctx.records}
+        )
+
+        ctx.log(
+            f"OBSERVE: {len(ip_endpoints)} IPs | "
+            f"max_entropy_ip={max_entropy_ip} entropy={max_entropy:.2f} | "
+            f"total_distinct_eps={ctx.raw_metrics['total_distinct_endpoints']}"
+        )
+
+    def orient(self, ctx: AgentContext) -> None:
+        """Fetch LTM entropy baseline; check evidence board for known-bad IPs."""
+        # Record batch stats for adaptive threshold
+        self.memory.ltm.record_batch_stats("PayloadAgent", {
+            "max_ip_entropy": ctx.raw_metrics.get("max_entropy", 0.0),
+            "total_distinct_endpoints": float(ctx.raw_metrics.get("total_distinct_endpoints", 0)),
+        })
+
+        batch_num = self.memory.ltm.get_batch_count()
+        if batch_num < self.MIN_WARMUP_BATCHES:
+            ctx.raw_metrics["in_warmup"] = True
+            ctx.log(f"ORIENT: warm-up batch {batch_num}/{self.MIN_WARMUP_BATCHES} — learning only")
+        else:
+            ctx.raw_metrics["in_warmup"] = False
+
+        if self.memory.ltm.is_distribution_stable("PayloadAgent"):
+            self._update_adaptive_thresholds()
+            ctx.log("ORIENT: distribution stable — adaptive entropy threshold active")
+
+        # Check for prior known-bad IP evidence
+        kb_evidence = self.tools.call(
+            "read_evidence_board", key_filter="knowledge:known_bad", min_confidence=0.7
+        )
+        ctx.raw_metrics["known_bad_evidence"] = kb_evidence
+        if kb_evidence:
+            ctx.log(f"ORIENT: {len(kb_evidence)} known-bad IP entries on board")
+            ctx.confidence_score = max(ctx.confidence_score, 0.20)
+
+    def hypothesize(self, ctx: AgentContext) -> None:
+        """Hypothesize scan/enumeration if a single IP covers many distinct endpoints."""
+        if ctx.raw_metrics.get("in_warmup") or not self.memory.ltm.is_distribution_stable("PayloadAgent"):
+            ctx.hypothesis = "warmup_learning"
+            ctx.log("HYPOTHESIZE: warm-up or unstable distribution — building baseline entropy model")
+            return
+
+        max_entropy = ctx.raw_metrics.get("max_entropy", 0.0)
+        max_ip = ctx.raw_metrics.get("max_entropy_ip")
+        distinct = ctx.raw_metrics.get("per_ip_distinct", {}).get(max_ip, 0) if max_ip else 0
+
+        if max_ip and max_entropy >= self.ENTROPY_THRESHOLD and distinct >= self.MIN_DISTINCT_ENDPOINTS:
+            ctx.hypothesis = "endpoint_enumeration"
+            ctx.threat_type = ThreatType.PORT_SCAN
+            ctx.log(
+                f"HYPOTHESIZE: {max_ip} entropy={max_entropy:.2f} >= {self.ENTROPY_THRESHOLD:.2f} "
+                f"with {distinct} distinct endpoints — scan/enumeration suspected"
+            )
+        elif max_entropy > 0:
+            ctx.hypothesis = "check_entropy"
+            ctx.log(f"HYPOTHESIZE: entropy={max_entropy:.2f} below threshold — checking")
+        else:
+            ctx.hypothesis = "insufficient_endpoint_diversity"
+            ctx.log("HYPOTHESIZE: all IPs targeting same endpoint — no enumeration signal")
+
+    def investigate(self, ctx: AgentContext) -> None:
+        """Z-score entropy vs LTM baseline; verify per-IP request density."""
+        if ctx.hypothesis in ("insufficient_endpoint_diversity", "warmup_learning"):
+            return
+
+        per_ip_entropy = ctx.raw_metrics.get("per_ip_entropy", {})
+        max_ip = ctx.raw_metrics.get("max_entropy_ip")
+
+        # Compute z-score of max entropy vs all per-IP entropies in this batch
+        all_entropies = list(per_ip_entropy.values())
+        if len(all_entropies) >= 3 and max_ip:
+            result = self.tools.call(
+                "run_statistical_test",
+                values=all_entropies,
+                test="zscore",
+                threshold=2.0,
+            )
+            if result.get("significant"):
+                z = result.get("z", 0.0)
+                ctx.indicators.append(
+                    f"endpoint_entropy_spike: {max_ip} z={z:.2f} "
+                    f"(entropy={per_ip_entropy.get(max_ip, 0):.2f})"
+                )
+                # Cap z-score-alone contribution below the conclude() threshold (0.60).
+                # The z-score is supporting evidence; the absolute port-scan check
+                # (has_low_service_port + unusual_mid) must also fire to conclude ATTACK.
+                # This prevents FPs from normal multi-protocol benign traffic.
+                ctx.confidence_score = max(ctx.confidence_score, min(0.55, abs(z) / 5.0))
+                ctx.log(f"INVESTIGATE: entropy z-score significant z={z:.2f}")
+
+        # Absolute check: high entropy + many distinct endpoints
+        max_entropy = ctx.raw_metrics.get("max_entropy", 0.0)
+        distinct = ctx.raw_metrics.get("per_ip_distinct", {}).get(max_ip, 0) if max_ip else 0
+
+        if max_entropy >= self.ENTROPY_THRESHOLD and distinct >= self.MIN_DISTINCT_ENDPOINTS:
+            # Port scan signature: systematic sweep hits BOTH low service ports (< 1024)
+            # AND unusual mid-range destination ports (1024-49151, non-standard).
+            # Benign traffic never mixes these two; even high-application-port traffic
+            # (e.g. ports 9300-9900) stays in its own narrow band with no low ports.
+            ip_eps = ctx.raw_metrics.get("ip_endpoints", {}).get(max_ip, {})
+            ip_req_count = sum(ip_eps.values())
+
+            has_low_service_port = False   # any endpoint with port < 1024
+            unusual_mid = []               # ports 1024-49151 not in benign service set, hit ≥2x
+            for ep, cnt in ip_eps.items():
+                try:
+                    port = int(ep.split("/port_")[-1].split("/")[0])
+                except (ValueError, IndexError):
+                    # non-numeric endpoint — treat as unusual if hit ≥2 times
+                    if cnt >= 2:
+                        unusual_mid.append(ep)
+                    continue
+                if port >= 49152:
+                    continue  # skip ephemeral source-port noise
+                if port < 1024:
+                    has_low_service_port = True
+                elif port not in self._BENIGN_SERVICE_PORTS and cnt >= 2:
+                    unusual_mid.append(ep)
+
+            if has_low_service_port and len(unusual_mid) >= 2:
+                ctx.indicators.append(
+                    f"port_scan_signature: {max_ip} hit {distinct} distinct endpoints "
+                    f"({ip_req_count} requests, entropy={max_entropy:.2f}, "
+                    f"unusual_mid={len(unusual_mid)})"
+                )
+                ctx.confidence_score = max(ctx.confidence_score, 0.80)
+                self._post_evidence(
+                    f"payload:port_scan:{max_ip}",
+                    {"ip": max_ip, "distinct_endpoints": distinct, "entropy": max_entropy},
+                    0.80,
+                    ["payload", "port_scan"],
+                )
+
+        # Post entropy metrics to LTM for future runs
+        for ip, entropy in list(per_ip_entropy.items())[:self.MAX_IP_ENTROPY_PAIRS]:
+            self.memory.ltm.record_batch_stats("PayloadAgent", {"ip_entropy": entropy})
+
+    def evaluate(self, ctx: AgentContext) -> LoopDecision:
+        if ctx.hypothesis in ("insufficient_endpoint_diversity", "warmup_learning"):
+            return LoopDecision.INSUFFICIENT_DATA
+        if ctx.confidence_score >= 0.75 and ctx.indicators:
+            return LoopDecision.CONCLUDE
+        if ctx.iteration >= 2:
+            return LoopDecision.CONCLUDE
+        return LoopDecision.CONCLUDE
+
+    def conclude(self, ctx: AgentContext) -> AgentFinding:
+        threat_detected = ctx.confidence_score >= 0.60 and bool(ctx.indicators)
+        if threat_detected:
+            # Distinguish port scan (many /port_X) from generic enumeration
+            max_ip = ctx.raw_metrics.get("max_entropy_ip", "")
+            eps = ctx.raw_metrics.get("ip_endpoints", {}).get(max_ip, {})
+            is_port_scan = any(k.startswith("/port_") for k in eps)
+            ctx.threat_type = ThreatType.PORT_SCAN if is_port_scan else ThreatType.ENUMERATION
+            ctx.log(f"CONCLUDE: {ctx.threat_type.value} detected (conf={ctx.confidence_score:.2f})")
+        else:
+            ctx.log("CONCLUDE: no endpoint enumeration detected")
+        return self._make_finding(ctx, threat_detected)

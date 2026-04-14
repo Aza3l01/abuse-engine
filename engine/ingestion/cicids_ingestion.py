@@ -58,7 +58,7 @@ def _row_to_record(row: pd.Series) -> Optional[LogRecord]:
             user_agent=str(row.get("user_agent", "")),
             label=str(row.get("label", "BENIGN")),
             attack_category=str(row.get("attack_category", "Benign")),
-            is_attack=bool(row.get("is_attack", False)),
+            is_attack=str(row.get("label", "BENIGN")).upper() != "BENIGN",
             session_id=_make_session_id(
                 str(row["ip"]),
                 str(row.get("user_agent", "")),
@@ -102,12 +102,12 @@ class CICIDSIngestion:
         else:
             df = pd.read_csv(self.path)
 
-        if self.max_records > 0:
-            df = df.head(self.max_records)
-
-        # Sort by timestamp so sliding windows are chronological
+        # Sort by timestamp BEFORE capping so max_records picks the earliest N records
         if "timestamp" in df.columns:
             df = df.sort_values("timestamp").reset_index(drop=True)
+
+        if self.max_records > 0:
+            df = df.head(self.max_records)
 
         logger.info("Loaded %d raw rows from %s", len(df), self.path)
         return df

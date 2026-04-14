@@ -24,6 +24,10 @@ class ThreatType(str, Enum):
     CREDENTIAL_STUFFING = "CREDENTIAL_STUFFING"
     BOT_ACTIVITY        = "BOT_ACTIVITY"
     SCRAPING            = "SCRAPING"
+    PORT_SCAN           = "PORT_SCAN"
+    ENUMERATION         = "ENUMERATION"
+    SEQUENCE_ABUSE      = "SEQUENCE_ABUSE"
+    GEO_ANOMALY         = "GEO_ANOMALY"
     UNKNOWN_ABUSE       = "UNKNOWN_ABUSE"
 
 

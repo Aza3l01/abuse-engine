@@ -8,15 +8,12 @@ Role: Autonomous coordinator that:
   4. Detects compound signals (e.g. High Volume + Bot Timing → Scraping Bot).
   5. Produces a final FusionVerdict with full explainability.
 
-Fusion strategy: weighted vote on confidence scores (XGBoost stacking
-is the full production approach; here we use logistic combination which
-is equivalent in the 3-agent case and avoids a training dependency).
-
-Key calibrations:
-  - is_attack threshold raised 0.45 → 0.60 (reduces false positives)
-  - Single-agent majority guard: if only 1/3 agents fires, require conf ≥ 0.80
-  - Compound signal: each contributing agent must have conf ≥ 0.70 individually
-  - Compound signal confidence boost applied only when both agents are high-quality
+Fusion strategy: weighted vote on confidence scores with XGBoost stacking
+layer. The XGB model is a lightweight meta-classifier (n_estimators=50) that
+takes per-agent confidence scores as features and predicts the binary attack
+label. It is online-fitted from the engine's own verdict history stored in LTM.
+During cold-start (< 50 labeled verdicts) the system falls back to the
+rule-based weighted vote.
 """
 
 from __future__ import annotations
@@ -24,10 +21,17 @@ import dataclasses
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from engine.agents.auth_agent import AuthAgent
 from engine.agents.base_agent import BaseAgent
+from engine.agents.geo_agent import GeoIPAgent
+from engine.agents.knowledge_agent import KnowledgeAgent
+from engine.agents.payload_agent import PayloadAgent
+from engine.agents.sequence_agent import SequenceAgent
 from engine.agents.temporal_agent import TemporalAgent
 from engine.agents.volume_agent import VolumeAgent
 from engine.memory.shared_memory import SharedMemory
@@ -43,14 +47,37 @@ from schemas.models import (
 
 logger = logging.getLogger(__name__)
 
+try:
+    from xgboost import XGBClassifier as _XGBClassifier
+    _XGB_AVAILABLE = True
+except ImportError:
+    _XGB_AVAILABLE = False
+
+# Module-level XGB stacker — one model shared across all orchestrator instances
+_xgb_stacker: Optional["_XGBClassifier"] = None
+_xgb_trained_on: int = 0
+_XGB_MIN_SAMPLES = 50          # minimum labeled verdicts before activation
+# Feature order: VolumeAgent, TemporalAgent, AuthAgent, PayloadAgent, SequenceAgent, GeoIPAgent, n_active, compound_boost
+_XGB_AGENT_ORDER = ["VolumeAgent", "TemporalAgent", "AuthAgent", "PayloadAgent", "SequenceAgent", "GeoIPAgent"]
+
+
 # ---------------------------------------------------------------------------
-# Agent domain map — which threat types each agent is responsible for
+# Dispatch plan (triage output)
 # ---------------------------------------------------------------------------
+
+@dataclass
+class DispatchPlan:
+    agents: List[str] = field(default_factory=list)
+    reasoning: List[str] = field(default_factory=list)
+    skip_reasons: Dict[str, str] = field(default_factory=dict)
 
 _AGENT_DOMAINS: Dict[str, frozenset] = {
     "VolumeAgent":   frozenset({ThreatType.DOS, ThreatType.SCRAPING}),
     "TemporalAgent": frozenset({ThreatType.BOT_ACTIVITY, ThreatType.SCRAPING}),
     "AuthAgent":     frozenset({ThreatType.BRUTE_FORCE, ThreatType.CREDENTIAL_STUFFING}),
+    "PayloadAgent":  frozenset({ThreatType.PORT_SCAN, ThreatType.ENUMERATION}),
+    "SequenceAgent": frozenset({ThreatType.SEQUENCE_ABUSE}),
+    "GeoIPAgent":    frozenset({ThreatType.GEO_ANOMALY}),
 }
 
 # If threat A is active at HIGH confidence, these related threats may have been
@@ -90,6 +117,13 @@ _COMPOUND_RULES: List[Tuple[frozenset, ThreatType, str, float, float]] = [
         0.08,
         0.70,
     ),
+    (
+        frozenset({ThreatType.PORT_SCAN, ThreatType.DOS}),
+        ThreatType.PORT_SCAN,
+        "Port Scan + High Volume → Network Sweep",
+        0.10,
+        0.70,
+    ),
 ]
 
 
@@ -106,11 +140,14 @@ class MetaAgentOrchestrator:
         verdict = orchestrator.run(records)
     """
 
-    # Agent weight in fusion (can be tuned via ablation)
-    _AGENT_WEIGHTS: Dict[str, float] = {
+    # Cold-start fallback weights — superseded by LTM-derived precision after ≥20 outcomes
+    _AGENT_WEIGHTS_FALLBACK: Dict[str, float] = {
         "VolumeAgent":   1.0,
         "TemporalAgent": 0.9,
         "AuthAgent":     1.0,
+        "PayloadAgent":  0.9,
+        "SequenceAgent": 0.85,
+        "GeoIPAgent":    0.80,
     }
 
     # Attack decision thresholds
@@ -120,14 +157,23 @@ class MetaAgentOrchestrator:
 
     def __init__(self, memory: SharedMemory, max_workers: int = 3, llm_client=None):
         self.memory = memory
-        self.tools = ToolRegistry(memory)
         self.max_workers = max_workers
         self._llm = llm_client  # Optional[LLMClient]
+
+        # KnowledgeAgent must be created before ToolRegistry so the tools
+        # can reference it.  It runs a warm-up thread in the background.
+        self._knowledge = KnowledgeAgent(memory)
+        self._knowledge.warm_up()
+
+        self.tools = ToolRegistry(memory, knowledge_agent=self._knowledge)
 
         self._agents: List[BaseAgent] = [
             VolumeAgent(memory, self.tools, llm_client=llm_client),
             TemporalAgent(memory, self.tools, llm_client=llm_client),
             AuthAgent(memory, self.tools, llm_client=llm_client),
+            PayloadAgent(memory, self.tools, llm_client=llm_client),
+            SequenceAgent(memory, self.tools, llm_client=llm_client),
+            GeoIPAgent(memory, self.tools, llm_client=llm_client),
         ]
 
     # ── Public entry point ─────────────────────────────────────────────────
@@ -136,30 +182,58 @@ class MetaAgentOrchestrator:
         """
         Full pipeline:
           1. Clear the evidence board for this batch.
-          2. Dispatch agents in parallel.
-          3. Fuse findings → verdict.
+          2. Triage: decide which agents are warranted.
+          3. Dispatch warranted agents in parallel.
+          4. Fuse findings → verdict.
         """
         # Fresh board for each batch
         self.memory.board.clear()
+        # Increment global batch counter every batch (used by agents for warmup)
+        self.memory.ltm.increment_batch_count()
 
         logger.info(
-            "[MetaAgent] Dispatching %d agents for %d records",
-            len(self._agents), len(records),
+            "[MetaAgent] Dispatching agents for %d records",
+            len(records),
         )
 
-        # ── Step 1: Parallel agent dispatch ─────────────────────────────
-        findings = self._dispatch(records)
+        # ── Step 1: Triage ───────────────────────────────────────────────
+        plan = self._triage(records)
+        logger.info(
+            "[MetaAgent] Triage: dispatching %s | skipped: %s",
+            plan.agents, list(plan.skip_reasons.keys()),
+        )
 
-        # ── Step 2: Read consolidated evidence board ─────────────────────
+        # ── Step 2: Parallel agent dispatch ─────────────────────────────
+        findings = self._dispatch(records, plan)
+
+        # ── Step 3: Read consolidated evidence board ─────────────────────
         all_evidence = self.tools.call("read_evidence_board")
         logger.info("[MetaAgent] Evidence board has %d entries", len(all_evidence))
 
-        # ── Step 3: Conflict resolution & compound detection ─────────────
-        verdict = self._fuse(findings, all_evidence)
+        # ── Step 4: Conflict resolution & compound detection ─────────────
+        verdict = self._fuse(findings, all_evidence, plan)
 
         # ── Step 4: Optional LLM meta-fusion ─────────────────────────────
         if self._llm is not None:
             verdict = self._llm_fuse(verdict, findings, all_evidence)
+
+        # ── Step 5: Record agent outcomes for self-determined weights ─────
+        for f in findings:
+            self.memory.ltm.record_agent_outcome(
+                f.agent_name,
+                predicted_attack=f.threat_detected,
+                final_verdict_attack=verdict.is_attack,
+            )
+
+        # ── Step 6: Update KnowledgeAgent with verdict outcome ────────────
+        top_ips = {r.ip for r in records}
+        for ip in top_ips:
+            self.tools.call(
+                "update_knowledge_base",
+                ip=ip,
+                outcome=verdict.is_attack,
+                confidence=verdict.confidence_score,
+            )
 
         logger.info(
             "[MetaAgent] Verdict: %s | conf=%.2f | compound=%s",
@@ -169,12 +243,197 @@ class MetaAgentOrchestrator:
         )
         return verdict
 
+    # ── XGBoost stacking helpers ───────────────────────────────────────────
+
+    def _xgb_feature_vector(
+        self,
+        findings: List[AgentFinding],
+        compound_boost: float,
+    ) -> List[float]:
+        """Build a fixed-length feature vector for XGB stacking."""
+        # Per-agent confidence scores (0.0 if agent not in this batch)
+        conf_by_agent: Dict[str, float] = {
+            f.agent_name: f.confidence_score for f in findings
+        }
+        features = [conf_by_agent.get(name, 0.0) for name in _XGB_AGENT_ORDER]
+        # Aggregate features
+        features.append(float(sum(1 for f in findings if f.threat_detected)))  # n_active
+        features.append(compound_boost)
+        return features
+
+    def _retrain_xgb(self) -> None:
+        """Refit XGBClassifier on accumulated verdict history from LTM."""
+        global _xgb_stacker, _xgb_trained_on
+        if not _XGB_AVAILABLE:
+            return
+
+        samples = self.memory.ltm.get_verdict_samples()
+        n = len(samples)
+        if n < _XGB_MIN_SAMPLES:
+            return
+
+        # Check if both classes present AND minimum positive ratio (avoid suppression bias)
+        labels = [s[1] for s in samples]
+        if len(set(labels)) < 2:
+            return
+        pos_ratio = sum(labels) / len(labels)
+        if pos_ratio < 0.05:
+            # XGB trained on <5% positive samples would suppress real attacks;
+            # wait until the dataset has enough positive examples.
+            return
+
+        if _xgb_stacker is not None and _xgb_trained_on >= n - 5:
+            return  # No significant new data; skip refit
+
+        X = np.array([s[0] for s in samples])
+        y = np.array([s[1] for s in samples])
+
+        _xgb_stacker = _XGBClassifier(
+            n_estimators=50,
+            max_depth=3,
+            learning_rate=0.1,
+            use_label_encoder=False,
+            eval_metric="logloss",
+            verbosity=0,
+            n_jobs=1,
+            random_state=42,
+        )
+        _xgb_stacker.fit(X, y)
+        _xgb_trained_on = n
+        logger.debug("[MetaAgent] XGB stacker retrained on %d samples", n)
+
+    def _xgb_predict_proba(self, features: List[float]) -> Optional[float]:
+        """
+        Return P(attack=1) from the XGB stacker, or None if not trained.
+        """
+        if not _XGB_AVAILABLE or _xgb_stacker is None:
+            return None
+        x = np.array([features])
+        return float(_xgb_stacker.predict_proba(x)[0][1])
+
+    # ── Triage ─────────────────────────────────────────────────────────────
+
+    def _triage(self, records: List[LogRecord]) -> DispatchPlan:
+        """
+        Fast (<1ms) pre-dispatch scan. Decides which agents are warranted
+        based on cheap surface signals. Thresholds adapt from LTM after warmup.
+        """
+        plan = DispatchPlan()
+        if not records:
+            return plan
+
+        # ── Fast observations ────────────────────────────────────────────
+        n_4xx = sum(1 for r in records if r.status in (401, 403))
+
+        # Sample first 50 for rough dom_ratio (no full Counter needed)
+        sample = records[:50]
+        sample_size = len(sample)
+        from collections import Counter as _Counter
+        sample_ip_counts = _Counter(r.ip for r in sample)
+        top_ip_count = sample_ip_counts.most_common(1)[0][1] if sample_ip_counts else 0
+        rough_dom_ratio = top_ip_count / sample_size if sample_size > 0 else 0.0
+
+        timestamps_ms = [r.timestamp.timestamp() * 1000.0 for r in records]
+        ts_span_ms = max(timestamps_ms) - min(timestamps_ms) if len(timestamps_ms) > 1 else 0.0
+
+        distinct_endpoints = len({r.endpoint_template or r.endpoint for r in records})
+
+        known_bad_present = self._knowledge.has_known_bad_in_batch(records)
+
+        # ── Adaptive dispatch thresholds from LTM ────────────────────────
+        dom_mean, dom_std = self.memory.ltm.get_batch_distribution("VolumeAgent", "dom_ratio")
+        ltm_dispatch_vol = (dom_mean + dom_std) if (dom_mean is not None and dom_std is not None) else 0.50
+
+        # ── Dispatch rules ────────────────────────────────────────────────
+        if known_bad_present:
+            plan.agents = ["VolumeAgent", "TemporalAgent", "AuthAgent", "PayloadAgent", "SequenceAgent", "GeoIPAgent"]
+            plan.reasoning.append("known_bad IP in batch — dispatching ALL agents")
+            return plan
+
+        if n_4xx > 0:
+            plan.agents.append("AuthAgent")
+            plan.reasoning.append(f"n_4xx={n_4xx} → AuthAgent warranted")
+        else:
+            plan.skip_reasons["AuthAgent"] = f"n_4xx=0"
+
+        if rough_dom_ratio > ltm_dispatch_vol:
+            plan.agents.append("VolumeAgent")
+            plan.reasoning.append(
+                f"rough_dom_ratio={rough_dom_ratio:.2f} > {ltm_dispatch_vol:.2f} → VolumeAgent warranted"
+            )
+        else:
+            # Always dispatch VolumeAgent: the 50-sample rough ratio can miss mid-window floods
+            # (e.g. DoS Hulk where attacker IP appears after record 50). VolumeAgent uses the
+            # full 500-record window and will quickly return INSUFFICIENT_DATA on benign batches.
+            plan.agents.append("VolumeAgent")
+            plan.reasoning.append(
+                f"rough_dom_ratio={rough_dom_ratio:.2f} <= {ltm_dispatch_vol:.2f} but "
+                f"VolumeAgent always dispatched (full-window analysis)"
+            )
+
+        if ts_span_ms > 200:
+            plan.agents.append("TemporalAgent")
+            plan.reasoning.append(
+                f"ts_span_ms={ts_span_ms:.0f} > 200 → TemporalAgent warranted"
+            )
+        else:
+            plan.skip_reasons["TemporalAgent"] = f"ts_span_ms={ts_span_ms:.0f} <= 200"
+
+        if distinct_endpoints >= 5:
+            plan.agents.append("PayloadAgent")
+            plan.reasoning.append(
+                f"distinct_endpoints={distinct_endpoints} >= 5 → PayloadAgent warranted"
+            )
+        else:
+            plan.skip_reasons["PayloadAgent"] = f"distinct_endpoints={distinct_endpoints} < 5"
+
+        if distinct_endpoints >= 3:
+            plan.agents.append("SequenceAgent")
+            plan.reasoning.append(
+                f"distinct_endpoints={distinct_endpoints} >= 3 → SequenceAgent warranted"
+            )
+        else:
+            plan.skip_reasons["SequenceAgent"] = f"distinct_endpoints={distinct_endpoints} < 3"
+
+        # GeoIPAgent: always dispatch (no-op on private IPs, negligible cost)
+        plan.agents.append("GeoIPAgent")
+        plan.reasoning.append("GeoIPAgent always dispatched (offline-first, negligible cost)")
+
+        # Ensure at least one agent always runs (fallback: dispatch all)
+        if not plan.agents:
+            plan.agents = ["VolumeAgent", "TemporalAgent", "AuthAgent", "PayloadAgent", "SequenceAgent", "GeoIPAgent"]
+            plan.reasoning.append("no triage signals — dispatching all agents as fallback")
+            plan.skip_reasons.clear()
+
+        return plan
+
     # ── Parallel dispatch ──────────────────────────────────────────────────
 
-    def _dispatch(self, records: List[LogRecord]) -> List[AgentFinding]:
-        findings: List[AgentFinding] = []
+    def _dispatch(self, records: List[LogRecord], plan: Optional[DispatchPlan] = None) -> List[AgentFinding]:
+        active_names = set(plan.agents) if plan else {a.__class__.__name__ for a in self._agents}
+        active_agents = [a for a in self._agents if a.__class__.__name__ in active_names]
+
+        # Agents skipped by triage still emit a "no finding" result so fusion
+        # has the full 3-finding list (preserves existing test expectations).
+        skipped_names = {a.__class__.__name__ for a in self._agents} - active_names
+        skipped_findings: List[AgentFinding] = []
+        for a in self._agents:
+            if a.__class__.__name__ in skipped_names:
+                from schemas.models import AgentFinding, ConfidenceLevel
+                skipped_findings.append(AgentFinding(
+                    agent_name=a.__class__.__name__,
+                    threat_detected=False,
+                    confidence=ConfidenceLevel.LOW,
+                    confidence_score=0.0,
+                    indicators=[],
+                    reasoning_trace=[
+                        f"[triage] skipped — {plan.skip_reasons.get(a.__class__.__name__, 'triage')}"
+                    ] if plan else [],
+                ))
+
+        findings: List[AgentFinding] = list(skipped_findings)
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            futures = {pool.submit(agent.run, records): agent for agent in self._agents}
+            futures = {pool.submit(agent.run, records): agent for agent in active_agents}
             for future in as_completed(futures):
                 agent = futures[future]
                 try:
@@ -194,6 +453,7 @@ class MetaAgentOrchestrator:
         self,
         findings: List[AgentFinding],
         evidence: List[Dict],
+        plan: Optional[DispatchPlan] = None,
     ) -> FusionVerdict:
 
         active = [f for f in findings if f.threat_detected]
@@ -235,7 +495,10 @@ class MetaAgentOrchestrator:
 
         for f in resolved_findings:
             if f.threat_detected:
-                w = self._AGENT_WEIGHTS.get(f.agent_name, 1.0)
+                w = self.memory.ltm.get_agent_precision(f.agent_name)
+                if w == 1.0:
+                    # Still in fallback — use per-agent cold-start weight
+                    w = self._AGENT_WEIGHTS_FALLBACK.get(f.agent_name, 1.0)
                 weighted_conf += f.confidence_score * w
                 total_weight += w
                 contributing.append(f.agent_name)
@@ -275,9 +538,33 @@ class MetaAgentOrchestrator:
             # Multiple agents agree — use the standard fused threshold
             is_attack = fused_conf >= self._ATTACK_THRESHOLD and final_threat != ThreatType.NONE
 
+        # ── XGBoost stacking layer (overrides rule-based verdict if trained) ──
+        features = self._xgb_feature_vector(resolved_findings, compound_boost)
+        # Record rule-based verdict BEFORE XGB override to avoid circular training bias
+        rule_is_attack = is_attack
+        self.memory.ltm.record_verdict_sample(features, int(rule_is_attack))
+        self._retrain_xgb()
+        # Don't let XGB downgrade a high-confidence single-agent verdict —
+        # XGB is trained on historical data and may not have seen the current attack type yet.
+        # Only apply XGB blend when the rule-based verdict is ambiguous (not a clear high-conf single agent).
+        _single_high_conf = (n_contributing == 1 and rule_is_attack)
+        xgb_proba = self._xgb_predict_proba(features)
+        if xgb_proba is not None and not _single_high_conf:
+            # Blend: 0.4 × rule-based + 0.6 × xgb
+            blended = 0.4 * fused_conf + 0.6 * xgb_proba
+            is_attack_xgb = blended >= self._ATTACK_THRESHOLD and final_threat != ThreatType.NONE
+            if is_attack_xgb != is_attack:
+                logger.debug(
+                    "[MetaAgent] XGB stacker overrides rule verdict: "
+                    "rule=%s xgb_proba=%.3f blended=%.3f",
+                    is_attack, xgb_proba, blended,
+                )
+            is_attack = is_attack_xgb
+            fused_conf = min(1.0, blended)
+
         # ── Build explanation ─────────────────────────────────────────────
         explanation = self._build_explanation(
-            resolved_findings, compound_signals, fused_conf, is_attack
+            resolved_findings, compound_signals, fused_conf, is_attack, plan
         )
 
         return FusionVerdict(
@@ -317,6 +604,13 @@ class MetaAgentOrchestrator:
 
         for i, f in enumerate(resolved):
             if f.threat_detected or f.confidence != ConfidenceLevel.LOW:
+                continue
+
+            # Only escalate agents that had AT LEAST SOME signal (conf > 0.1).
+            # Agents that returned pure INSUFFICIENT_DATA (conf ≈ 0) have no
+            # evidence to corroborate the related threat — escalating them
+            # without any signal would amplify unrelated FPs.
+            if f.confidence_score < 0.10:
                 continue
 
             domain = _AGENT_DOMAINS.get(f.agent_name, frozenset())
@@ -360,12 +654,21 @@ class MetaAgentOrchestrator:
         compound_signals: List[str],
         fused_conf: float,
         is_attack: bool,
+        plan: Optional[DispatchPlan] = None,
     ) -> str:
         lines = []
         if is_attack:
             lines.append(f"⚠️  ATTACK DETECTED (fused confidence={fused_conf:.0%})")
         else:
             lines.append(f"✅  No attack detected (fused confidence={fused_conf:.0%})")
+
+        if plan and plan.reasoning:
+            lines.append("Triage:")
+            for r in plan.reasoning:
+                lines.append(f"  → {r}")
+        if plan and plan.skip_reasons:
+            for agent, reason in plan.skip_reasons.items():
+                lines.append(f"  ⊘ [{agent}] skipped — {reason}")
 
         if compound_signals:
             lines.append("Compound signals:")

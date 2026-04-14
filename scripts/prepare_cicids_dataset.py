@@ -167,7 +167,8 @@ def process_cicids_files(files, output_path):
         print("No valid files processed. Exiting.")
         sys.exit(1)
 
-    # Concatenate all dataframes
+    # Concatenate all dataframes — preserve natural temporal ordering within each
+    # day file; sorted file names (alphabetical) ensure deterministic output.
     data = pd.concat(all_dfs, ignore_index=True)
     print(f"Total rows after concatenation: {len(data)}")
 
@@ -186,7 +187,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     input_dir = args.input_dir
-    csv_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.csv')]
+    csv_files = sorted([os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.csv')])
     if not csv_files:
         print(f"No CSV files found in {input_dir}")
         sys.exit(1)

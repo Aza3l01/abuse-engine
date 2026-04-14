@@ -143,6 +143,122 @@ class LongTermMemory:
         with self._lock:
             return len(getattr(self, "_iat_reference", [])) >= self._MIN_IAT_REFERENCE
 
+    # ── Agent outcome tracking (for self-determined weights) ─────────────
+
+    def record_agent_outcome(
+        self, agent_name: str, predicted_attack: bool, final_verdict_attack: bool
+    ) -> None:
+        """Record whether an agent's prediction matched the final verdict."""
+        with self._lock:
+            if not hasattr(self, "_agent_outcomes"):
+                self._agent_outcomes: Dict[str, List[tuple]] = defaultdict(list)
+            self._agent_outcomes[agent_name].append((predicted_attack, final_verdict_attack))
+            # Keep rolling window of last 100 outcomes where agent fired
+            fired = [(p, v) for p, v in self._agent_outcomes[agent_name] if p]
+            self._agent_outcomes[agent_name] = fired[-100:]
+
+    def get_agent_precision(self, agent_name: str) -> float:
+        """Rolling precision over last 100 batches where agent fired.
+        Returns 1.0 (uniform weight fallback) until 20 outcome records exist."""
+        with self._lock:
+            outcomes = getattr(self, "_agent_outcomes", {}).get(agent_name, [])
+            fired = [(p, v) for p, v in outcomes if p]
+            if len(fired) < 20:
+                return 1.0
+            tp = sum(1 for p, v in fired if p and v)
+            return tp / len(fired) if fired else 1.0
+
+    # ── Batch-level distribution tracking (for adaptive thresholds) ──────
+
+    _MAX_BATCH_HISTORY = 500
+
+    def increment_agent_batch_count(self, agent_name: str) -> int:
+        """Increment and return a monotonic batch counter for an agent."""
+        with self._lock:
+            if not hasattr(self, "_agent_batch_counts"):
+                self._agent_batch_counts: Dict[str, int] = {}
+            self._agent_batch_counts[agent_name] = \
+                self._agent_batch_counts.get(agent_name, 0) + 1
+            return self._agent_batch_counts[agent_name]
+
+    def get_agent_batch_count(self, agent_name: str) -> int:
+        """Return how many batches an agent has processed (never evicted)."""
+        with self._lock:
+            return getattr(self, "_agent_batch_counts", {}).get(agent_name, 0)
+
+    def record_batch_stats(self, agent_name: str, stats: Dict[str, float]) -> None:
+        """Store a snapshot of an agent's key metrics for this batch."""
+        with self._lock:
+            if not hasattr(self, "_batch_stats"):
+                self._batch_stats: Dict[str, List[Dict[str, float]]] = defaultdict(list)
+            self._batch_stats[agent_name].append(dict(stats))
+            if len(self._batch_stats[agent_name]) > self._MAX_BATCH_HISTORY:
+                self._batch_stats[agent_name].pop(0)
+
+    def get_batch_distribution(self, agent_name: str, metric: str) -> tuple:
+        """Return (mean, std) of a named metric across stored batches.
+        Returns (None, None) if fewer than 5 samples exist."""
+        with self._lock:
+            history = getattr(self, "_batch_stats", {}).get(agent_name, [])
+            vals = [b[metric] for b in history if metric in b]
+            if len(vals) < 5:
+                return (None, None)
+            mean = sum(vals) / len(vals)
+            variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+            std = variance ** 0.5
+            return (mean, std)
+
+    def is_distribution_stable(self, agent_name: str) -> bool:
+        """True when rolling variance of key metrics has not changed > 5%
+        for the last 10 batches. Replaces the hardcoded WARMUP_BATCHES guard."""
+        with self._lock:
+            history = getattr(self, "_batch_stats", {}).get(agent_name, [])
+            if len(history) < 10:
+                return False
+            last10 = history[-10:]
+            # Check stability across all metrics present in the last 10 batches
+            all_metrics = set()
+            for b in last10:
+                all_metrics.update(b.keys())
+            for metric in all_metrics:
+                vals = [b[metric] for b in last10 if metric in b]
+                if len(vals) < 10:
+                    continue
+                mean = sum(vals) / len(vals)
+                if mean == 0:
+                    continue
+                variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+                # Check if the variance of the last 5 vs previous 5 changed > 5%
+                first5 = vals[:5]
+                last5 = vals[5:]
+                mean1 = sum(first5) / 5
+                mean2 = sum(last5) / 5
+                var1 = sum((v - mean1) ** 2 for v in first5) / 5
+                var2 = sum((v - mean2) ** 2 for v in last5) / 5
+                if var1 > 0 and abs(var2 - var1) / var1 > 0.05:
+                    return False
+            return True
+
+    # ── XGBoost stacking — labeled verdict history ─────────────────────
+
+    _MAX_VERDICT_HISTORY = 2000
+
+    def record_verdict_sample(
+        self, feature_vector: "List[float]", label: int
+    ) -> None:
+        """Store one (feature_vector, label) pair for XGB stacking training."""
+        with self._lock:
+            if not hasattr(self, "_verdict_samples"):
+                self._verdict_samples: List[tuple] = []
+            self._verdict_samples.append((list(feature_vector), label))
+            if len(self._verdict_samples) > self._MAX_VERDICT_HISTORY:
+                self._verdict_samples.pop(0)
+
+    def get_verdict_samples(self) -> "List[tuple]":
+        """Return all stored (feature_vector, label) pairs."""
+        with self._lock:
+            return list(getattr(self, "_verdict_samples", []))
+
 
 # ---------------------------------------------------------------------------
 # Evidence Board  (blackboard)

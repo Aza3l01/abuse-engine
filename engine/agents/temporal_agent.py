@@ -22,7 +22,7 @@ Key calibrations for CICIDS 2017 (synthetic timestamps):
 from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -39,16 +39,83 @@ _HUMAN_IAT_SAMPLE = [
     300, 600, 9000, 2200, 800, 350, 18000, 1200, 500, 3300,
 ]
 
+# CUSUM parameters
+# We detect a *decrease* in IAT (from human-like ~2000ms to bot-like <500ms).
+# threshold_k: allowance parameter — slack in units of σ
+# threshold_h: decision/alarm threshold in units of σ
+_CUSUM_K    = 0.5    # allowance (half the expected shift size)
+_CUSUM_H    = 4.0    # alarm threshold (4σ cumulative shift triggers alarm)
+
 
 class TemporalAgent(BaseAgent):
 
     BOT_CONFIDENCE_THRESHOLD  = 0.85     # raised from 0.65 — CICIDS timestamps are synthetically regular
     MIN_EVENTS_FOR_ANALYSIS   = 10       # raised from 8 — need more data for reliable periodicity
-    MIN_PERIODIC_IPS          = 2        # require ≥ 2 IPs showing periodicity
     MIN_TIMESTAMP_SPAN_MS     = 200.0    # skip if whole batch spans < 200ms (synthetic artifact)
     MIN_IAT_RESOLUTION_MS     = 500.0    # skip per-IP periodicity if median IAT < this (timestamp resolution too low)
     OFF_HOURS                 = set(range(0, 6))   # 00:00 – 05:59 UTC
     OFF_HOURS_DOMINANT_RATIO  = 0.85     # raised from 0.70 — need strong majority
+
+    # Cold-start fallback — replaced adaptively once LTM is stable
+    MIN_PERIODIC_IPS          = 2        # require ≥ 2 IPs showing periodicity
+
+    def _update_adaptive_thresholds(self) -> None:
+        """Replace cold-start constants with data-derived values from LTM."""
+        off_mean, off_std = self.memory.ltm.get_batch_distribution(
+            "TemporalAgent", "off_hours_ratio"
+        )
+        if off_mean is not None and off_std is not None:
+            self.OFF_HOURS_DOMINANT_RATIO = min(0.99, off_mean + 2.0 * off_std)
+
+        # MIN_PERIODIC_IPS: derive from observed periodicity rate in benign batches
+        periodic_mean, _ = self.memory.ltm.get_batch_distribution(
+            "TemporalAgent", "periodic_ip_count"
+        )
+        if periodic_mean is not None:
+            # Require at least mean + 1 to be above noise floor
+            self.MIN_PERIODIC_IPS = max(2, int(periodic_mean) + 1)
+
+    @staticmethod
+    def _cusum_detect(
+        iats: List[float],
+        target_mean: Optional[float] = None,
+    ) -> Tuple[bool, float]:
+        """
+        Upper CUSUM (Page's algorithm) for detecting a *decrease* in mean IAT.
+        Used to catch the transition from irregular human browsing to bot-like
+        mechanical polling.
+
+        Method:
+          We negate the IAT values so a decrease in IAT becomes an *increase*
+          in the negated series. We then apply the standard upper CUSUM.
+
+        Args:
+            iats: list of inter-arrival times (ms)
+            target_mean: reference mean (human IAT). Defaults to mean of iats.
+
+        Returns:
+            (alarm, cusum_peak) — True if alarm fired, peak cusum statistic.
+        """
+        if len(iats) < 6:
+            return False, 0.0
+
+        arr = np.array(iats, dtype=float)
+        # Negate: detect drop in IAT as rise in -IAT
+        neg = -arr
+        mu = float(neg.mean()) if target_mean is None else -target_mean
+        sigma = float(neg.std()) + 1e-6
+
+        # Standardise and apply CUSUM
+        z = (neg - mu) / sigma
+        cusum = 0.0
+        peak = 0.0
+        for zi in z:
+            cusum = max(0.0, cusum + zi - _CUSUM_K)
+            if cusum > peak:
+                peak = cusum
+
+        alarm = peak >= _CUSUM_H
+        return alarm, round(peak, 3)
 
     def observe(self, ctx: AgentContext) -> None:
         """Extract timestamps per IP, compute off-hours ratio, and check span."""
@@ -100,6 +167,17 @@ class TemporalAgent(BaseAgent):
         if batch_iats:
             self.memory.ltm.add_iat_samples(batch_iats)
         ctx.raw_metrics["iat_reference_ready"] = self.memory.ltm.has_iat_reference()
+
+        # Record batch-level stats for adaptive threshold computation
+        # (off_hours_ratio is available now; periodic_ip_count is updated after investigate)
+        self.memory.ltm.record_batch_stats("TemporalAgent", {
+            "off_hours_ratio": ctx.raw_metrics.get("off_hours_ratio", 0.0),
+        })
+
+        # Replace cold-start constants once distribution is stable
+        if self.memory.ltm.is_distribution_stable("TemporalAgent"):
+            self._update_adaptive_thresholds()
+            ctx.log("ORIENT: distribution stable — adaptive thresholds active")
 
     def hypothesize(self, ctx: AgentContext) -> None:
         """Form bot-timing hypothesis with stricter guards."""
@@ -197,6 +275,21 @@ class TemporalAgent(BaseAgent):
                     )
                     ctx.confidence_score = max(ctx.confidence_score, 0.70)
 
+            # ── CUSUM: detect sustained *decrease* in IAT (bot acceleration) ──
+            if len(iats) >= 6:
+                human_mean = float(np.mean(_HUMAN_IAT_SAMPLE))
+                cusum_alarm, cusum_peak = self._cusum_detect(iats, target_mean=human_mean)
+                if cusum_alarm:
+                    ctx.indicators.append(
+                        f"cusum_iat_alarm: {ip} peak={cusum_peak:.2f} "
+                        f"(threshold={_CUSUM_H}) — sustained IAT reduction detected"
+                    )
+                    ctx.confidence_score = max(ctx.confidence_score, 0.72)
+                    ctx.log(
+                        f"INVESTIGATE: CUSUM alarm for {ip} — peak={cusum_peak:.2f}, "
+                        f"median_IAT={float(np.median(iats)):.0f}ms"
+                    )
+
         ctx.raw_metrics["periodicity_results"] = periodicity_results
         ctx.raw_metrics["periodic_ip_count"]   = periodic_ip_count
 
@@ -242,6 +335,15 @@ class TemporalAgent(BaseAgent):
         return LoopDecision.CONCLUDE
 
     def conclude(self, ctx: AgentContext) -> AgentFinding:
+        # Record periodic_ip_count now that investigate() has run
+        self.memory.ltm.record_batch_stats("TemporalAgent", {
+            "periodic_ip_count": float(ctx.raw_metrics.get("periodic_ip_count", 0)),
+        })
+
+        # Replace cold-start constants once distribution is stable
+        if self.memory.ltm.is_distribution_stable("TemporalAgent"):
+            self._update_adaptive_thresholds()
+
         # Raised threshold: need 0.60 confidence AND indicators
         threat_detected = ctx.confidence_score >= 0.60 and bool(ctx.indicators)
         if threat_detected:
