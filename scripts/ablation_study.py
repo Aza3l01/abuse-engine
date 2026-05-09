@@ -38,6 +38,16 @@ import engine.coordinator.meta_agent as _meta_mod
 import engine.agents.volume_agent as _vol_mod
 
 
+_ALL_AGENTS = [
+    "VolumeAgent",
+    "TemporalAgent",
+    "AuthAgent",
+    "PayloadAgent",
+    "SequenceAgent",
+    "GeoIPAgent",
+]
+
+
 def _run_mode(
     label: str,
     data_path: str,
@@ -45,6 +55,7 @@ def _run_mode(
     max_records: int,
     disable_adaptive: bool,
     disable_xgb: bool,
+    disabled_agents: frozenset = frozenset(),
 ) -> Dict[str, Any]:
     """Run a single evaluation pass with specified ablation settings.
 
@@ -87,6 +98,13 @@ def _run_mode(
 
     orch = MetaAgentOrchestrator(mem)
     ing = CICIDSIngestion(data_path, window_size=window_size, max_records=max_records)
+
+    # Leave-one-out: drop disabled agents from the orchestrator's active list.
+    # XGB feature vector defaults absent agents to 0.0, so no further changes needed.
+    if disabled_agents:
+        orch._agents = [
+            a for a in orch._agents if type(a).__name__ not in disabled_agents
+        ]
 
     counts = [0, 0, 0, 0]  # FP, TP, FN, TN
     fp_agents: Counter = Counter()
@@ -137,6 +155,7 @@ def _run_mode(
         "label": label,
         "disable_adaptive": disable_adaptive,
         "disable_xgb": disable_xgb,
+        "disabled_agents": sorted(disabled_agents),
         "tp": tp,
         "fp": fp,
         "fn": fn,
@@ -156,50 +175,112 @@ def main() -> None:
     parser.add_argument("--max-records", type=int, default=1_400_000,
                         help="Records to evaluate (0 = all ~2.8M)")
     parser.add_argument("--output", default="results/ablation_study.json")
+    parser.add_argument(
+        "--mode",
+        choices=["components", "agents", "all"],
+        default="components",
+        help=(
+            "components — existing Rules/Adaptive/XGBoost comparison; "
+            "agents — leave-one-agent-out ablation (full system, each agent removed); "
+            "all — run both"
+        ),
+    )
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
     print("  Abuse Engine — Ablation Study")
-    print(f"  max_records={args.max_records or 'ALL'}  window={args.window}")
+    print(f"  mode={args.mode}  max_records={args.max_records or 'ALL'}  window={args.window}")
     print(f"{'='*60}")
 
-    modes = [
-        ("Mode A — Rules-only (cold-start, no ML)",
-         dict(disable_adaptive=True, disable_xgb=True)),
-        ("Mode B — Rules + adaptive thresholds (no XGB)",
-         dict(disable_adaptive=False, disable_xgb=True)),
-        ("Mode C — Full system (adaptive + XGB stacking)",
-         dict(disable_adaptive=False, disable_xgb=False)),
-    ]
+    common = dict(
+        data_path=args.data,
+        window_size=args.window,
+        max_records=args.max_records,
+    )
 
-    results = []
-    for label, kwargs in modes:
-        res = _run_mode(
-            label=label,
-            data_path=args.data,
-            window_size=args.window,
-            max_records=args.max_records,
-            **kwargs,
-        )
-        results.append(res)
+    component_results: list = []
+    agent_results: list = []
 
-    # ── Summary table ────────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("  ABLATION SUMMARY TABLE")
-    print(f"{'='*60}")
-    header = f"{'Mode':<45} {'P':>6} {'R':>6} {'F1':>6} {'FP':>5} {'FN':>5}"
-    print(header)
-    print("─" * len(header))
-    for r in results:
-        row = (
-            f"{r['label']:<45} "
-            f"{r['precision']:>6.3f} "
-            f"{r['recall']:>6.3f} "
-            f"{r['f1']:>6.3f} "
-            f"{r['fp']:>5} "
-            f"{r['fn']:>5}"
+    # ── Component ablation (Mode A / B / C) ─────────────────────────────────
+    if args.mode in ("components", "all"):
+        print("\n[1/2] Component ablation — Rule / Adaptive / XGBoost")
+        component_modes = [
+            ("Mode A — Rules-only (cold-start, no ML)",
+             dict(disable_adaptive=True, disable_xgb=True)),
+            ("Mode B — Rules + adaptive thresholds (no XGB)",
+             dict(disable_adaptive=False, disable_xgb=True)),
+            ("Mode C — Full system (adaptive + XGB stacking)",
+             dict(disable_adaptive=False, disable_xgb=False)),
+        ]
+        for label, kwargs in component_modes:
+            res = _run_mode(label=label, **common, **kwargs)
+            component_results.append(res)
+
+    # ── Agent leave-one-out ablation ─────────────────────────────────────────
+    if args.mode in ("agents", "all"):
+        print("\n[2/2] Agent leave-one-out ablation — full system, one agent removed each run")
+
+        # Baseline: full system, all agents
+        baseline = _run_mode(
+            label="Baseline — all 6 agents (full system)",
+            disable_adaptive=False,
+            disable_xgb=False,
+            **common,
         )
-        print(row)
+        agent_results.append(baseline)
+
+        for agent_name in _ALL_AGENTS:
+            res = _run_mode(
+                label=f"Remove {agent_name}",
+                disable_adaptive=False,
+                disable_xgb=False,
+                disabled_agents=frozenset({agent_name}),
+                **common,
+            )
+            # Annotate with delta versus baseline for easy comparison
+            res["delta_f1"] = round(res["f1"] - baseline["f1"], 4)
+            res["delta_recall"] = round(res["recall"] - baseline["recall"], 4)
+            res["delta_precision"] = round(res["precision"] - baseline["precision"], 4)
+            agent_results.append(res)
+
+    # ── Summary tables ────────────────────────────────────────────────────────
+    if component_results:
+        print(f"\n{'='*60}")
+        print("  COMPONENT ABLATION SUMMARY")
+        print(f"{'='*60}")
+        header = f"{'Mode':<45} {'P':>6} {'R':>6} {'F1':>6} {'FP':>5} {'FN':>5}"
+        print(header)
+        print("─" * len(header))
+        for r in component_results:
+            print(
+                f"{r['label']:<45} "
+                f"{r['precision']:>6.3f} "
+                f"{r['recall']:>6.3f} "
+                f"{r['f1']:>6.3f} "
+                f"{r['fp']:>5} "
+                f"{r['fn']:>5}"
+            )
+
+    if agent_results:
+        print(f"\n{'='*60}")
+        print("  AGENT LEAVE-ONE-OUT SUMMARY")
+        print(f"{'='*60}")
+        header = f"{'Removed agent':<35} {'P':>6} {'R':>6} {'F1':>6} {'ΔF1':>7} {'ΔR':>7} {'FP':>5} {'FN':>5}"
+        print(header)
+        print("─" * len(header))
+        for r in agent_results:
+            delta_f1 = r.get("delta_f1", 0.0)
+            delta_r = r.get("delta_recall", 0.0)
+            print(
+                f"{r['label']:<35} "
+                f"{r['precision']:>6.3f} "
+                f"{r['recall']:>6.3f} "
+                f"{r['f1']:>6.3f} "
+                f"{delta_f1:>+7.3f} "
+                f"{delta_r:>+7.3f} "
+                f"{r['fp']:>5} "
+                f"{r['fn']:>5}"
+            )
 
     # ── Save ─────────────────────────────────────────────────────────────────
     output_path = Path(args.output)
@@ -210,8 +291,10 @@ def main() -> None:
             "data_path": args.data,
             "window_size": args.window,
             "max_records": args.max_records,
+            "mode": args.mode,
         },
-        "modes": results,
+        "component_ablation": component_results,
+        "agent_ablation": agent_results,
     }
     with open(output_path, "w") as f:
         json.dump(payload, f, indent=2)
