@@ -198,12 +198,14 @@ abuse-engine/
 #### Research Prototype — Phase 1 (current implementation)
 
 ```
- ┌─────────────────────────────────────────────────────────────────────────┐
- │                    CICIDS 2017 — Processed CSV                          │
- │           2 830 743 records  ·  500 records / batch  ·  Phase 5g        │
- └───────────────────────────┬─────────────────────────────────────────────┘
-                             │
-                             ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+ │  Cross-Dataset Evaluation  (4 datasets  ·  Processed CSV  ·  500 records / batch)        │
+ │                                                                                          │
+ │  CICIDS 2017         2 830 743 records   │  CSIC 2010 HTTP           56 538 records     │
+ │  CTU-13 Scenario 10  ~1 305 000 records  │  AWS Honeypot (marx-geo)  ~449 500 records   │
+ └──────────────────────────────────────────────────┬───────────────────────────────────────┘
+                                                    │
+                                                    ▼
  ┌───────────────────────────────────────────────────────────────────────────┐
  │  CICIDSIngestion  —  sliding window · 500 records / batch                 │
  └──────────────────┬────────────────────────────────────────────────────────┘
@@ -274,8 +276,11 @@ abuse-engine/
             │
             ▼
  ┌────────────────────────────────────────────────────────────────────────┐
- │  results/full_2.8M.json  ·  results/ablation_study.json               │
- │  F1=0.854 (2.8M, Phase 5g)  ·  Precision=0.785  ·  32/32 tests ✓      │
+ │  CICIDS 2017   results/cicids/full_2.8M.json         F1=0.854  P=0.785 │
+ │  CSIC 2010     results/csic/phase1.json              F1=0.970  P=1.000 │
+ │  CTU-13 Sc.10  results/ctu-13/ctu13_sc10_fixed.json  F1=0.753  P=0.974 │
+ │  Honeypot      results/honeypot/honeypot_geo_v3.json  F1=0.924  P=1.000│
+ │  32/32 tests ✓                                                          │
  └────────────────────────────────────────────────────────────────────────┘
 
  Legend:  ──►  data flow     ◄──►  read + write     ···►  optional / async
