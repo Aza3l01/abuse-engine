@@ -257,14 +257,13 @@ abuse-engine/
  ┌───────────────────────────────────────────────────────────────────────────┐
  │   MetaAgentOrchestrator                                                   │
  │                                                                           │
- │   1  Triage  (_triage() → DispatchPlan · skips dormant agents)            │
- │         └─► 2  Conflict Resolution  (_resolve_conflicts() · escalation)   │
- │                   └─► 3  Compound Signal Detection  (5 rules)             │
- │                             DoS+Bot→Scraping · DDoS+Bot→Botnet DDoS …     │
- │                             └─► 4  Weighted Confidence Fusion             │
- │                                   attack thresh 0.60 · single-agent 0.80  │
- │                                   XGBoost stacking (≥50 verdicts, else WA)│
- │                                   └─► 5  LLM Meta-Fusion  (optional)      │
+ │   Triage ──► Conflict Resolution ──► Compound Detection ──► Fusion [LLM] │
+ │                                                                           │
+ │   _triage() selects active agents and builds a DispatchPlan               │
+ │   _resolve_conflicts() escalates silent agents on related threat fires    │
+ │   Compound detection: 5 rules map co-occurring threats to higher classes  │
+ │   Weighted confidence fusion with XGBoost stacking after ≥50 verdicts    │
+ │   Optional LLM override — falls back to rule-based output on error        │
  └───────────────────────────────────────┬───────────────────────────────────┘
                                          │ FusionVerdict
                                          ▼  is_attack · threat_type · confidence
