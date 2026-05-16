@@ -2,7 +2,7 @@
 
 Research prototype for **"Adaptive Multi-Agent Framework for Autonomous API Abuse Detection Using OODA-Loop Reasoning"** (IEEE submission).
 
-Detects DoS, DDoS, credential stuffing, port scanning, web attacks, botnet C2 traffic, and geographic anomalies from API gateway logs — no inline proxy, no source code changes required. Validated across four public network intrusion datasets totalling ≈4.6M records.
+Detects DoS, DDoS, credential stuffing, port scanning, web attacks, botnet C2 traffic, and geographic anomalies from API gateway logs, no inline proxy, no source code changes required. Validated across four public network intrusion datasets totalling ≈4.6M records.
 
 ---
 
@@ -33,14 +33,14 @@ All runs: `window=500`, `attack_threshold=0.05` (≥5% attack-presence per batch
                                          │
                                          ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │  CICIDSIngestion  —  sliding window · 500 records / batch                         │
+ │  CICIDSIngestion  ·  sliding window · 500 records / batch                         │
  └──────────────────────────┬────────────────────────────────────────────────────────┘
                             │ each batch
               ┌─────────────┴──────────────────────────────────────────┐
               │                                                        │
               ▼                                                        ▼
  ┌──────────────────────────────────────┐    ┌──────────────────────────────────────────────────────────┐
- │   Shared Memory  (in-process dicts)  │    │   Detection Agents  —  ThreadPoolExecutor (parallel)      │
+ │   Shared Memory  (in-process dicts)  │    │   Detection Agents  ·  ThreadPoolExecutor (parallel)      │
  │                                      │    │                                                          │
  │  STM  sliding window counters        │◄──►│  ┌───────────────────────────────────────────────────┐  │
  │  LTM  per-IP/endpoint baselines      │    │  │ VolumeAgent       OODA loop · max 3 iterations    │  │
@@ -68,7 +68,7 @@ All runs: `window=500`, `attack_threshold=0.05` (≥5% attack-presence per batch
  │  IP reputation priors                │    │  │ Detects: Geo Anomaly · Impossible Travel          │  │
  │  cross-batch attack signatures       │    │  └───────────────────────────────────────────────────┘  │
  │  time-decay scoring                  │    │                                                          │
- │  conf-gated write (> 0.85)           │    │  KnowledgeAgent queried via tool — no verdict emitted   │
+ │  conf-gated write (> 0.85)           │    │  KnowledgeAgent queried via tool - no verdict emitted   │
  └──────────────────────────────────────┘    └────────────────────────────────┬─────────────────────────┘
                                                                               │ AgentFinding × 6
  ┌──────────────────────────────────────┐                                    │
@@ -113,25 +113,25 @@ Each agent implements a six-step **OODA reasoning loop**: Observe → Orient →
 | **PayloadAgent** | Port scan, Endpoint enumeration | Shannon entropy of endpoint distribution; hard-bypass at ≥ 100 distinct endpoints + entropy ≥ 6.0 bits |
 | **SequenceAgent** | Sequence abuse, Enumeration, BOLA | Markov chain N-gram transitions on per-IP endpoint sequences; anomalous transition probabilities vs LTM baseline |
 | **GeoIPAgent** | Geo anomaly, Impossible travel | RFC1918 heuristics; TOR/VPN evidence from Evidence Board; spatial diversity detection for botnet spread |
-| **KnowledgeAgent** | *(passive — no verdict)* | IP reputation priors; cross-batch attack signatures; confidence-gated write (> 0.85); time-decay scoring |
+| **KnowledgeAgent** | *(passive, no verdict)* | IP reputation priors; cross-batch attack signatures; confidence-gated write (> 0.85); time-decay scoring |
 
 ---
 
-## Memory — Three Tiers
+## Memory
 
 ```
-TIER 1 — Short-Term Memory  (in-process dict)
+TIER 1: Short-Term Memory  (in-process dict)
   Active session states, sliding window counters,
   current investigation state per agent, Evidence Board
   Updated: every batch
 
-TIER 2 — Long-Term Memory  (in-process dict)
+TIER 2: Long-Term Memory  (in-process dict)
   Per-IP/endpoint baselines, learned IAT distributions (up to 2 000 samples),
   entropy baselines per agent, past investigation outcomes,
   agent rolling precision (used for self-weighting)
   Updated: every batch
 
-TIER 3 — KnowledgeAgent store  (in-process dict)
+TIER 3: KnowledgeAgent store  (in-process dict)
   Confirmed attack signatures keyed by IP, confidence-gated write (> 0.85),
   time-decay scoring, cross-batch pattern synthesis
   Updated: after each high-confidence verdict
@@ -177,7 +177,7 @@ Network flow records from a 5-day testbed capture (Canadian Institute for Cybers
 | Botnet (ISCX) | 1,966 | 0.07% |
 | Web Attack (SQLi, XSS, Brute Force) | 673 | 0.02% |
 
-**Known limitations:** Timestamps have 1-second resolution (TemporalAgent IAT guard activates). All IPs are RFC-1918 private (GeoIPAgent dormant — validated separately on CTU-13 and Honeypot).
+**Known limitations:** Timestamps have 1-second resolution (TemporalAgent IAT guard activates). All IPs are RFC-1918 private (GeoIPAgent dormant and validated separately on CTU-13 and Honeypot).
 
 ---
 
@@ -207,7 +207,7 @@ Real botnet capture from Czech Technical University (Neris botnet family).
 | Background (Benign) | ~1,150,000 |
 | Botnet (C2 traffic) | ~155,000 |
 
-**Attack taxonomy:** Neris botnet performing spam + click-fraud via HTTP; C2 connections to external IPs; IRC-based heartbeats; high-volume SMTP floods. Uses routable public IPs — validates GeoIPAgent.
+**Attack taxonomy:** Neris botnet performing spam + click-fraud via HTTP; C2 connections to external IPs; IRC-based heartbeats; high-volume SMTP floods. Uses routable public IPs to validate GeoIPAgent.
 
 ---
 
@@ -223,7 +223,7 @@ Captures automated probes, port scans, brute-force SSH, and reconnaissance from 
 
 ## Detailed Results
 
-### CICIDS 2017 — Full 2.8M (`results/cicids/full_2.8M.json`)
+### CICIDS 2017: Full 2.8M (`results/cicids/full_2.8M.json`)
 
 | Metric | Value |
 |---|---|
@@ -253,17 +253,17 @@ Captures automated probes, port scans, brute-force SSH, and reconnaissance from 
 | AuthAgent | 218 | 83 |
 | TemporalAgent | 59 | 26 |
 | SequenceAgent | 1 | 0 |
-| GeoIPAgent | — | — (dormant: RFC1918 IPs) |
+| GeoIPAgent | - | - (dormant: RFC1918 IPs) |
 
 ---
 
-### Ablation Study — CICIDS 2017, 1.4M record slice (`results/ablation_study.json`)
+### Ablation Study: CICIDS 2017, 1.4M record slice (`results/ablation_study.json`)
 
 | Mode | Precision | Recall | F1 | FP | FN |
 |---|---|---|---|---|---|
-| A — Static rules only (cold-start) | 1.000 | 0.692 | 0.818 | 0 | 167 |
-| B — Rules + adaptive thresholds | 0.979 | 0.759 | **0.855** | 9 | 131 |
-| C — Full system (adaptive + XGBoost) | 0.938 | 0.786 | 0.856 | 28 | 116 |
+| A - Static rules only (cold-start) | 1.000 | 0.692 | 0.818 | 0 | 167 |
+| B - Rules + adaptive thresholds | 0.979 | 0.759 | **0.855** | 9 | 131 |
+| C - Full system (adaptive + XGBoost) | 0.938 | 0.786 | 0.856 | 28 | 116 |
 
 Mode B (adaptive thresholds, no XGBoost) provides the largest single gain (+3.7 pp F1 over static rules). XGBoost stacking in Mode C is too aggressive on the heavily benign CICIDS distribution (2.1M benign vs 0.5M attack).
 
@@ -322,7 +322,7 @@ GeoIPAgent is the dominant detector (TP=770 / 899 batches). Zero false positives
 | Inter-Agent Comms | Scores passed to ensemble | Agents post and read each other's findings via Evidence Board |
 | Self-Reflection | No error awareness | Agent evaluates its own confidence, requests more data when uncertain |
 
-The `MetaAgentOrchestrator` uses `ThreadPoolExecutor` for parallel dispatch and a hand-written state machine for conflict resolution and fusion — architecturally equivalent to a directed agentic graph (LangGraph supervisor pattern). The `OrchestratorState` TypedDict is LangGraph-compatible should a future implementation migrate.
+The `MetaAgentOrchestrator` uses `ThreadPoolExecutor` for parallel dispatch and a hand-written state machine for conflict resolution and fusion, architecturally equivalent to a directed agentic graph (LangGraph supervisor pattern). The `OrchestratorState` TypedDict is LangGraph-compatible should a future implementation migrate.
 
 ---
 
@@ -408,7 +408,7 @@ abuse-engine/
 │   ├── ingestion/           # CICIDSIngestion, UNSWNB15Ingestion
 │   ├── llm/                 # LLMClient, prompts (Ollama / OpenAI-compatible)
 │   ├── memory/              # SharedMemory (STM + LTM + EvidenceBoard)
-│   ├── tests/               # run_tests.py — 32 tests, no pytest required
+│   ├── tests/               # run_tests.py, 32 tests, no pytest required
 │   └── tools/               # ToolRegistry (12 tools)
 ├── evaluation/
 │   └── evaluator.py         # Batch-level ≥5% threshold metrics
